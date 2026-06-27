@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Optional, Set
 
+import cv2
 from PySide6 import QtCore, QtWidgets
 
 from ..detector import DetectionParams, detect_terminal_wells, draw_detections
 from ..calibration import Calibration, default_origin
+from ..camera_calib import CameraCalibration, ChessboardCalibrator
 from ..plc import PlcConfig, ALL_GROUPS, push_to_plc
 from .camera_source import (
     CameraSource,
@@ -21,6 +23,7 @@ from .tabs_live import LiveViewTab
 from .tabs_camera import CameraTab
 from .tabs_plc import PlcTab
 from .tabs_detection import DetectionTab
+from .tabs_lens import LensTab
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -38,6 +41,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.params = DetectionParams()
         self.mm_per_px = 0.0
         self.invert_y = True
+
+        # Lens distortion calibration (fixes off-center accuracy).
+        self.calibrator = ChessboardCalibrator()
+        self.camera_calibration: Optional[CameraCalibration] = None
+        self.undistort_enabled = False
 
         self.plc_config = PlcConfig.from_ip("192.168.1.10", slot=None)
         self.plc_enabled = False
@@ -67,9 +75,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.camera_tab = CameraTab(self)
         self.plc_tab = PlcTab(self)
         self.detection_tab = DetectionTab(self)
+        self.lens_tab = LensTab(self)
         self.tabs.addTab(self.live_tab, "Live View")
         self.tabs.addTab(self.camera_tab, "Camera")
         self.tabs.addTab(self.detection_tab, "Detection")
+        self.tabs.addTab(self.lens_tab, "Lens")
         self.tabs.addTab(self.plc_tab, "PLC")
         outer.addWidget(self.tabs, 1)
 
@@ -235,8 +245,16 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         frame = self.camera.read()
         if frame is not None:
-            self.live_frame = frame
-            self.live_tab.show_frame(frame)
+            self.live_frame = frame                       # raw
+            self.live_tab.show_frame(self._maybe_undistort(frame))
+
+    def _maybe_undistort(self, frame):
+        """Apply lens-distortion correction when calibrated and enabled."""
+        if frame is None:
+            return None
+        if self.undistort_enabled and self.camera_calibration is not None:
+            return self.camera_calibration.undistort_image(frame)
+        return frame
 
     # ------------------------------------------------------------- capture
     def capture(self):
@@ -253,16 +271,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # overlay drawn on it) stays on screen instead of being overwritten by
         # the next live tick.
         self.stop_live()
-        self.captured_frame = frame
-        self.live_tab.show_frame(frame)
+        self.captured_frame = frame                       # raw
+        self.live_tab.show_frame(self._maybe_undistort(frame))
         self.statusBar().showMessage("Frame captured - image frozen")
         return frame
 
     def process(self):
-        frame = self.captured_frame if self.captured_frame is not None else self.live_frame
-        if frame is None:
+        raw = self.captured_frame if self.captured_frame is not None else self.live_frame
+        if raw is None:
             self.statusBar().showMessage("Nothing to process - capture a frame first")
             return
+        frame = self._maybe_undistort(raw)   # detect on the corrected image
         calibration = self._current_calibration(frame.shape)
         self.last_wells = detect_terminal_wells(frame, self.params, calibration)
         overlay = draw_detections(frame, self.last_wells)
@@ -313,6 +332,73 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(
             f"Calibrated: {scale:.5f} mm/px (from {distance_px:.1f} px = {mm:g} mm)"
         )
+
+    # ------------------------------------------------- lens (distortion) cal
+    def reset_lens_calibrator(self):
+        (cols, rows), square = self.lens_tab.board_config()
+        self.calibrator = ChessboardCalibrator((cols, rows), square)
+
+    def add_calibration_view(self) -> bool:
+        """Detect the chessboard in a RAW frame and store it for calibration."""
+        # Must use the uncorrected image -- distortion is what we are solving.
+        if self.camera is not None and self.camera.is_open():
+            raw = self.camera.read()
+        else:
+            raw = self.captured_frame if self.captured_frame is not None else self.live_frame
+        if raw is None:
+            self.statusBar().showMessage("No frame available for calibration")
+            return False
+        corners = self.calibrator.find_corners(raw)
+        if corners is not None:
+            self.calibrator.add_detected(corners)
+            vis = raw.copy()
+            cv2.drawChessboardCorners(vis, self.calibrator.pattern_size, corners, True)
+            self.stop_live()
+            self.live_tab.show_frame(vis)
+            return True
+        self.live_tab.show_frame(raw)
+        return False
+
+    def calibrate_lens(self):
+        if self.calibrator.count < 3:
+            QtWidgets.QMessageBox.information(
+                self, "Lens calibration",
+                "Capture at least 3 chessboard views (varied positions/angles) "
+                "before calibrating.")
+            return None
+        ref = self.captured_frame if self.captured_frame is not None else self.live_frame
+        if ref is None:
+            return None
+        size = (ref.shape[1], ref.shape[0])
+        try:
+            self.camera_calibration = self.calibrator.calibrate(size)
+        except Exception as exc:  # noqa: BLE001
+            QtWidgets.QMessageBox.critical(self, "Lens calibration failed", str(exc))
+            return None
+        self.statusBar().showMessage(
+            f"Lens calibrated: reprojection error {self.camera_calibration.rms:.3f} px")
+        return self.camera_calibration.rms
+
+    def set_undistort(self, on: bool):
+        self.undistort_enabled = bool(on) and self.camera_calibration is not None
+        # Refresh whatever is currently shown through the new setting.
+        raw = self.captured_frame if self.captured_frame is not None else self.live_frame
+        if raw is not None:
+            self.live_tab.show_frame(self._maybe_undistort(raw))
+
+    def save_lens_calibration(self, path: str):
+        if self.camera_calibration is None:
+            return
+        self.camera_calibration.save(path)
+        self.statusBar().showMessage(f"Calibration saved to {path}")
+
+    def load_lens_calibration(self, path: str):
+        try:
+            self.camera_calibration = CameraCalibration.load(path)
+        except Exception as exc:  # noqa: BLE001
+            QtWidgets.QMessageBox.critical(self, "Load failed", str(exc))
+            return
+        self.lens_tab.on_calibration_loaded(self.camera_calibration.rms)
 
     # ----------------------------------------------------------- detection
     def set_detection(self, min_radius_px, max_radius_px, expected_count,

@@ -33,9 +33,9 @@ def window(qapp):
     win.close()
 
 
-def test_window_builds_with_four_tabs(window):
+def test_window_builds_with_tabs(window):
     labels = [window.tabs.tabText(i) for i in range(window.tabs.count())]
-    assert labels == ["Live View", "Camera", "Detection", "PLC"]
+    assert labels == ["Live View", "Camera", "Detection", "Lens", "PLC"]
 
 
 def test_connect_synthetic_and_capture_process(window):

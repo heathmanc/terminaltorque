@@ -74,6 +74,9 @@ node and work with **either** backend, whether or not a live view is running.
 - **Detection** — tell it **what hole size to look for** (min/max diameter in
   pixels or millimeters), the expected well count, and detection sensitivity,
   plus calibration (mm/px, or set it from a known length).
+- **Lens** — chessboard **camera calibration** to remove lens distortion so
+  off-center circles are located accurately; capture views, calibrate, and
+  toggle undistortion (save/load the result).
 - **PLC** — enable/disable the push, set the connection, and see every PLC tag
   with its **type and description** and a per-tag write checkbox.
 
@@ -223,8 +226,9 @@ measurement is taken on the frozen frame, so capture/aim first.
 
 For accurate placement, **scroll to zoom** and **right-drag to pan**; in measure
 mode the pointer becomes a full-view crosshair with a **magnifier loupe** (red
-reticle = the exact pixel that will be recorded). **Reset View** fits the image
-again.
+reticle = the exact pixel that will be recorded). **Snap to edge** (on by
+default) snaps each click to the nearest sub-pixel edge, so points land exactly
+on a machined rim. **Reset View** fits the image again.
 
 ![measure with zoom + loupe](docs/hmi_measure_loupe.png)
 
@@ -244,10 +248,30 @@ image rows increase downward while robot Y usually increases upward). Edit the
 origin to a fiducial you have taught the robot, or set it directly in code via
 `Calibration`.
 
-> The scalar-scale model assumes a fronto-parallel lid and negligible lens
-> distortion. For a tilted lid, wide-angle lens, or large field of view, replace
-> it with a homography or a full `cv2.calibrateCamera` intrinsics + pose
-> estimate. The detector returns pixel geometry either way; only the
+### Lens calibration (off-center accuracy)
+
+A single mm/px scale assumes a distortion-free pinhole. Real lenses bend the
+image, so a circle far from the optical center appears **offset** — its reported
+position drifts toward the edges of the frame. The **Lens** tab fixes this with a
+standard chessboard calibration:
+
+1. Set the board geometry (inner corners = squares − 1; e.g. a 10×7 board is
+   9×6) and the printed square size.
+2. Hold the chessboard in front of the camera and press **Capture View** from
+   several angles and positions across the field of view (aim for 8–15 views,
+   spread to the corners).
+3. **Calibrate** — the reprojection error (in pixels) is shown as a quality
+   check; under ~1 px is good.
+4. Tick **Undistort image**. Every frame is now corrected before detection, so
+   off-center wells land correctly and the mm/px scale is valid across the whole
+   image. **Save**/**Load** persists the calibration (`.npz`) between sessions.
+
+Calibration views are always taken from the raw (uncorrected) image — that's
+what the distortion solve needs.
+
+> This corrects lens distortion. If the camera is also tilted relative to the
+> lid (perspective), a homography or full `cv2.calibrateCamera` pose estimate is
+> the next step; the detector returns pixel geometry either way, only the
 > pixel→world step changes.
 
 ## Library use

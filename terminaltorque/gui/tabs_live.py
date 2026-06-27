@@ -48,6 +48,11 @@ class LiveViewTab(QtWidgets.QWidget):
         self.btn_reset_view.setToolTip("Fit the image to the window (undo zoom/pan).")
         self.btn_reset_view.clicked.connect(lambda: self.view.reset_view())
 
+        self.snap_cb = QtWidgets.QCheckBox("Snap to edge")
+        self.snap_cb.setChecked(True)
+        self.snap_cb.setToolTip("Snap measure clicks to the nearest sub-pixel edge.")
+        self.snap_cb.toggled.connect(self.view.set_snap)
+
         self.btn_push = QtWidgets.QPushButton("Push to PLC")
         self.btn_push.clicked.connect(self.main.push_to_plc)
 
@@ -55,6 +60,7 @@ class LiveViewTab(QtWidgets.QWidget):
                   self.btn_reprocess, self.btn_measure, self.btn_reset_view,
                   self.btn_push):
             controls.addWidget(b)
+        controls.addWidget(self.snap_cb)
         controls.addStretch(1)
         left.addLayout(controls)
         root.addLayout(left, 3)

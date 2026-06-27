@@ -10,6 +10,41 @@ import cv2
 from PySide6 import QtCore, QtGui, QtWidgets
 
 
+def snap_to_edge(frame: np.ndarray, x: float, y: float, radius: int = 8):
+    """Snap a click to the nearest strong sub-pixel edge within ``radius`` px.
+
+    Finds the strongest image gradient in a small window around (x, y) and
+    refines it to sub-pixel with a local gradient-weighted centroid, so a point
+    placed by hand lands exactly on a machined rim instead of a pixel or two
+    off. Returns the (possibly unchanged) (x, y).
+    """
+    gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape[:2]
+    xi, yi = int(round(x)), int(round(y))
+    x0, x1 = max(0, xi - radius), min(w, xi + radius + 1)
+    y0, y1 = max(0, yi - radius), min(h, yi + radius + 1)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return x, y
+    roi = gray[y0:y1, x0:x1].astype(np.float32)
+    gx = cv2.Sobel(roi, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(roi, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+    if float(mag.max()) < 1e-3:
+        return x, y                      # no edge nearby; leave the click as-is
+    # Gradient-weighted centroid over the ROI (centered on the click). Across a
+    # straight edge this lands on the edge; along it, the symmetric window keeps
+    # the coordinate near where the user clicked instead of drifting.
+    weights = mag ** 2
+    ys, xs = np.mgrid[0:mag.shape[0], 0:mag.shape[1]].astype(np.float32)
+    total = float(weights.sum())
+    cx = float((weights * xs).sum() / total) + x0
+    cy = float((weights * ys).sum() / total) + y0
+    # Never snap further than the search radius.
+    if np.hypot(cx - x, cy - y) > radius:
+        return x, y
+    return cx, cy
+
+
 def bgr_to_qpixmap(frame: np.ndarray) -> QtGui.QPixmap:
     """Convert an OpenCV BGR (or grayscale) frame to a QPixmap."""
     if frame.ndim == 2:
@@ -49,6 +84,8 @@ class ImageView(QtWidgets.QLabel):
         self.setObjectName("ImageView")
         self.setMouseTracking(True)
         self._pixmap: Optional[QtGui.QPixmap] = None
+        self._frame: Optional[np.ndarray] = None   # raw BGR, for edge snapping
+        self._snap = True
         self._measure_mode = False
         self._points: list = []           # image-coordinate points
         self._zoom = 1.0
@@ -59,11 +96,16 @@ class ImageView(QtWidgets.QLabel):
         self._pan_last: Optional[QtCore.QPointF] = None
 
     # -- frame ---------------------------------------------------------------
+    def set_snap(self, enabled: bool) -> None:
+        self._snap = enabled
+
     def set_frame(self, frame: Optional[np.ndarray]) -> None:
         if frame is None:
             self._pixmap = None
+            self._frame = None
             self.update()
             return
+        self._frame = frame
         self._pixmap = bgr_to_qpixmap(frame)
         if self._fit:
             self._zoom = 1.0
@@ -148,6 +190,8 @@ class ImageView(QtWidgets.QLabel):
         if self._measure_mode and event.button() == QtCore.Qt.LeftButton:
             p = self._widget_to_image(event.position().x(), event.position().y())
             if p is not None:
+                if self._snap and self._frame is not None:
+                    p = snap_to_edge(self._frame, p[0], p[1])
                 self._points.append(p)
                 if len(self._points) == 2:
                     (x0, y0), (x1, y1) = self._points
