@@ -361,6 +361,38 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Calibrated: {scale:.5f} mm/px (from {distance_px:.1f} px = {mm:g} mm)"
         )
 
+    def calibrate_from_known_sizes(self):
+        """Fit mm/px from the detected circles' pixel diameters vs known mm.
+
+        Uses every row where a known diameter was entered. The scale is the
+        least-squares slope through the origin, mm = scale * px, which weights
+        larger (lower-relative-error) circles more than a plain mean of ratios.
+        """
+        if not self.last_wells:
+            self.statusBar().showMessage("Capture & Process first, then enter known sizes")
+            return
+        pairs = []
+        for row, mm in self.live_tab.known_diameters():
+            if row < len(self.last_wells):
+                px = self.last_wells[row].diameter_px
+                if px > 0:
+                    pairs.append((px, mm))
+        if not pairs:
+            QtWidgets.QMessageBox.information(
+                self, "Calibrate from sizes",
+                "Type each circle's true diameter (mm) in the 'Known Ø (mm)' "
+                "column for at least one detected circle, then try again.")
+            return
+        num = sum(px * mm for px, mm in pairs)
+        den = sum(px * px for px, _ in pairs)
+        scale = num / den
+        mean_err = 100.0 * sum(abs(scale * px - mm) / mm for px, mm in pairs) / len(pairs)
+        self.detection_tab.set_scale(scale)
+        self.statusBar().showMessage(
+            f"Calibrated from {len(pairs)} circle(s): {scale:.5f} mm/px "
+            f"(mean error {mean_err:.1f}%)")
+        self.process()   # re-run so results show in millimeters
+
     # ------------------------------------------------- lens (distortion) cal
     def reset_lens_calibrator(self):
         (cols, rows), square = self.lens_tab.board_config()

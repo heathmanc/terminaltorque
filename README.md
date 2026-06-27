@@ -241,6 +241,14 @@ rim, a gauge, a ruler mark). Enter that real length in millimeters when prompted
 and the mm-per-pixel scale is set immediately — no detect-first round-trip. The
 measurement is taken on the frozen frame, so capture/aim first.
 
+**Most robust (HMI): calibrate from detected sizes.** Capture & Process to
+detect the circles, type each one's true diameter into the **Known Ø (mm)**
+column of the results table, then press **Calibrate from sizes**. It fits
+mm-per-pixel across *all* annotated circles by least squares (so larger, lower-
+error circles count more) and reports the mean residual — averaging over many
+features beats any single measurement. Works great with the printable circle
+test target.
+
 For accurate placement, **scroll to zoom** and **right-drag to pan**; in measure
 mode the pointer becomes a full-view crosshair with a **magnifier loupe** (red
 reticle = the exact pixel that will be recorded). **Snap to edge** (on by

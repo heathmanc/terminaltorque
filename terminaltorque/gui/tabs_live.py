@@ -22,7 +22,6 @@ class LiveViewTab(QtWidgets.QWidget):
         self.view.measurementReady.connect(self.main.on_measurement)
         left.addWidget(self.view, 1)
 
-        controls = QtWidgets.QHBoxLayout()
         self.btn_live = QtWidgets.QPushButton("Start Live")
         self.btn_live.setCheckable(True)
         self.btn_live.toggled.connect(self._toggle_live)
@@ -48,6 +47,13 @@ class LiveViewTab(QtWidgets.QWidget):
         self.btn_reset_view.setToolTip("Fit the image to the window (undo zoom/pan).")
         self.btn_reset_view.clicked.connect(lambda: self.view.reset_view())
 
+        self.btn_cal_sizes = QtWidgets.QPushButton("Calibrate from sizes")
+        self.btn_cal_sizes.setToolTip(
+            "Enter each circle's known diameter in the 'Known O (mm)' column, "
+            "then click to fit mm-per-pixel across all of them (least squares)."
+        )
+        self.btn_cal_sizes.clicked.connect(self.main.calibrate_from_known_sizes)
+
         self.snap_cb = QtWidgets.QCheckBox("Snap to edge")
         self.snap_cb.setChecked(True)
         self.snap_cb.setToolTip("Snap measure clicks to the nearest sub-pixel edge.")
@@ -56,13 +62,19 @@ class LiveViewTab(QtWidgets.QWidget):
         self.btn_push = QtWidgets.QPushButton("Push to PLC")
         self.btn_push.clicked.connect(self.main.push_to_plc)
 
+        # Two rows so the button strip doesn't force the results panel narrow.
+        row1 = QtWidgets.QHBoxLayout()
         for b in (self.btn_live, self.btn_capture, self.btn_process,
-                  self.btn_reprocess, self.btn_measure, self.btn_reset_view,
-                  self.btn_push):
-            controls.addWidget(b)
-        controls.addWidget(self.snap_cb)
-        controls.addStretch(1)
-        left.addLayout(controls)
+                  self.btn_reprocess, self.btn_push):
+            row1.addWidget(b)
+        row1.addStretch(1)
+        row2 = QtWidgets.QHBoxLayout()
+        for b in (self.btn_measure, self.btn_reset_view, self.btn_cal_sizes):
+            row2.addWidget(b)
+        row2.addWidget(self.snap_cb)
+        row2.addStretch(1)
+        left.addLayout(row1)
+        left.addLayout(row2)
         root.addLayout(left, 3)
 
         # --- right: results ---
@@ -72,15 +84,30 @@ class LiveViewTab(QtWidgets.QWidget):
         self.summary.setStyleSheet("font-weight:600; color:#00c2c2;")
         right.addWidget(self.summary)
 
+        self.KNOWN_COL = 5
         self.table = QtWidgets.QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["#", "X", "Y", "Diameter", "Conf", "Valid"]
+            ["#", "X", "Y", "Diameter", "Conf", "Known Ø (mm)"]
         )
-        self.table.horizontalHeader().setSectionResizeMode(
-            QtWidgets.QHeaderView.Stretch
+        hdr = self.table.horizontalHeader()
+        for col in range(self.KNOWN_COL):       # numeric columns size to content
+            hdr.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(                # Known column takes the rest
+            self.KNOWN_COL, QtWidgets.QHeaderView.Stretch)
+        self.table.setMinimumWidth(360)
+        # Only the "Known O (mm)" column is editable (double-click to type).
+        self.table.setEditTriggers(
+            QtWidgets.QAbstractItemView.DoubleClicked
+            | QtWidgets.QAbstractItemView.EditKeyPressed
         )
-        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         right.addWidget(self.table, 1)
+        hint = QtWidgets.QLabel(
+            "Calibration from sizes: type each circle's true diameter in "
+            "'Known Ø (mm)', then 'Calibrate from sizes'."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#8b96a0; font-size:11px;")
+        right.addWidget(hint)
         root.addLayout(right, 2)
 
         self.set_controls_enabled(False)
@@ -117,9 +144,26 @@ class LiveViewTab(QtWidgets.QWidget):
                 f"{y:.2f}",
                 f"{dia:.2f}",
                 f"{w.confidence:.2f}",
-                "yes",
             ]
             for col, text in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(text)
                 item.setTextAlignment(QtCore.Qt.AlignCenter)
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
                 self.table.setItem(row, col, item)
+            # Editable "Known Ø (mm)" cell for size-based calibration.
+            known = QtWidgets.QTableWidgetItem("")
+            known.setTextAlignment(QtCore.Qt.AlignCenter)
+            self.table.setItem(row, self.KNOWN_COL, known)
+
+    def known_diameters(self):
+        """Yield (row_index, mm) for cells the operator filled with a value."""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, self.KNOWN_COL)
+            if item is None or not item.text().strip():
+                continue
+            try:
+                mm = float(item.text())
+            except ValueError:
+                continue
+            if mm > 0:
+                yield row, mm

@@ -280,6 +280,30 @@ def test_zoom_keeps_anchor_and_maps_correctly(qapp):
     assert view._zoom == 1.0
 
 
+def test_calibrate_from_known_sizes_averages(window):
+    # Detect the two synthetic wells (~84 px diameter each).
+    window.connect_synthetic_camera()
+    window.set_detection(25, 70, 2, 0.8)
+    window.capture_and_process()
+    assert len(window.last_wells) == 2
+
+    # Enter each circle's known diameter (12 mm) in the Known column.
+    tab = window.live_tab
+    for row in range(tab.table.rowCount()):
+        tab.table.item(row, tab.KNOWN_COL).setText("12.0")
+
+    window.calibrate_from_known_sizes()
+
+    # Least-squares scale ~ 12 mm / ~84 px.
+    px = sum(w.diameter_px for w in window.last_wells) / 2  # post-reprocess
+    cal = window._current_calibration((480, 640))
+    assert cal is not None
+    # mm/px should land near 12 / measured-px.
+    assert cal.mm_per_px == pytest.approx(12.0 / px, rel=0.05)
+    # And reported diameters now read ~12 mm.
+    assert window.last_wells[0].diameter_mm == pytest.approx(12.0, abs=1.0)
+
+
 def test_apply_measured_scale_sets_calibration(window):
     window.apply_measured_scale(distance_px=100.0, mm=12.0)
     assert window.detection_tab.mm_per_px.value() == pytest.approx(0.12)
