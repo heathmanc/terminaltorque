@@ -140,53 +140,56 @@ def _to_gray(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 
-def _refine_center(
-    gray: np.ndarray,
+def _refine_circle(
+    edges: np.ndarray,
     cx: float,
     cy: float,
     r: float,
-    margin: float,
-) -> Optional[Tuple[float, float]]:
-    """Refine a circle center using the gradient-magnitude centroid in an ROI.
+) -> Optional[Tuple[float, float, float]]:
+    """Refine center *and* radius by least-squares fitting the rim edge points.
 
-    The well's rim produces a ring of high gradient. Its intensity-weighted
-    centroid is a sub-pixel estimate of the circle center that averages out the
-    Hough accumulator's quantization. Returns None if the ROI is degenerate.
+    Collects the Canny edge pixels in a thin annulus around the candidate and
+    fits a circle to them algebraically (Kasa fit). Unlike a gradient-weighted
+    centroid, this depends only on the *geometry* of the rim, so uneven lighting
+    or a specular highlight on one side does not pull the center off -- the
+    behavior that left detections visibly offset on real metallic terminals.
+
+    Returns ``(cx, cy, r)`` or None if there is not a clean rim to fit.
     """
-    h, w = gray.shape[:2]
-    half = r * (1.0 + margin)
-    x0 = int(np.floor(cx - half))
-    y0 = int(np.floor(cy - half))
-    x1 = int(np.ceil(cx + half))
-    y1 = int(np.ceil(cy + half))
-    x0 = max(0, x0)
-    y0 = max(0, y0)
-    x1 = min(w, x1)
-    y1 = min(h, y1)
+    h, w = edges.shape[:2]
+    band = max(2.0, 0.30 * r)
+    x0 = max(0, int(np.floor(cx - r - band)))
+    y0 = max(0, int(np.floor(cy - r - band)))
+    x1 = min(w, int(np.ceil(cx + r + band)))
+    y1 = min(h, int(np.ceil(cy + r + band)))
     if x1 - x0 < 3 or y1 - y0 < 3:
         return None
 
-    roi = gray[y0:y1, x0:x1].astype(np.float32)
-    gx = cv2.Sobel(roi, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(roi, cv2.CV_32F, 0, 1, ksize=3)
-    mag = cv2.magnitude(gx, gy)
-
-    # Restrict to a ring around the expected rim so interior texture / nut
-    # features do not pull the centroid off-center.
-    ys, xs = np.mgrid[0:roi.shape[0], 0:roi.shape[1]].astype(np.float32)
-    dist = np.sqrt((xs - (cx - x0)) ** 2 + (ys - (cy - y0)) ** 2)
-    ring = np.abs(dist - r) <= max(2.0, 0.25 * r)
-    weights = mag * ring
-    total = float(weights.sum())
-    if total <= 1e-6:
+    ys, xs = np.nonzero(edges[y0:y1, x0:x1])
+    if xs.size < 8:
+        return None
+    ex = xs.astype(np.float64) + x0
+    ey = ys.astype(np.float64) + y0
+    # Keep only edge points near the expected rim (reject interior nut/threads).
+    d = np.hypot(ex - cx, ey - cy)
+    keep = np.abs(d - r) <= band
+    ex, ey = ex[keep], ey[keep]
+    if ex.size < 8:
         return None
 
-    rx = float((weights * xs).sum() / total) + x0
-    ry = float((weights * ys).sum() / total) + y0
-    # Guard against a refinement that jumped (bad ROI): cap the correction.
-    if abs(rx - cx) > r or abs(ry - cy) > r:
+    # Kasa circle fit: solve A [D, E, F]^T = b for x^2+y^2 + Dx + Ey + F = 0.
+    A = np.column_stack([ex, ey, np.ones_like(ex)])
+    b = ex ** 2 + ey ** 2
+    sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    ax, ay = sol[0] / 2.0, sol[1] / 2.0
+    rr2 = sol[2] + ax ** 2 + ay ** 2
+    if rr2 <= 0:
         return None
-    return rx, ry
+    rr = float(np.sqrt(rr2))
+    # Reject a runaway fit (keep the Hough estimate instead).
+    if np.hypot(ax - cx, ay - cy) > 0.5 * r or abs(rr - r) > 0.5 * r:
+        return None
+    return float(ax), float(ay), rr
 
 
 def _edge_support(
@@ -285,10 +288,10 @@ def detect_terminal_wells(
         candidates = _merge_concentric(candidates)
 
     for cx, cy, r, support in candidates:
-        refined = _refine_center(gray, cx, cy, r, params.refine_margin)
+        refined = _refine_circle(edges, cx, cy, r)
         is_refined = refined is not None
         if is_refined:
-            cx, cy = refined
+            cx, cy, r = refined
         # Confidence is the measured edge support: how complete the rim is, in
         # [0, 1]. This is a real quality signal, unlike the Hough vote rank.
         well = TerminalWell(

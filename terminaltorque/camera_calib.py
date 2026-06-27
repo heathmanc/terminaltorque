@@ -32,10 +32,28 @@ class CameraCalibration:
     image_size: Tuple[int, int]  # (width, height) the calibration was solved at
     rms: float = 0.0            # RMS reprojection error, pixels
 
+    def _matrix_for(self, width: int, height: int) -> np.ndarray:
+        """Camera matrix scaled to the given size.
+
+        Distortion coefficients are normalized and resolution-independent, but
+        the camera matrix (focal length, principal point) scales with image
+        size. Applying a 640x480 matrix to a 1920x1080 frame would warp it
+        badly -- a common cause of "calibration made it worse / offset".
+        """
+        cw, ch = self.image_size
+        if (width, height) == (cw, ch):
+            return self.camera_matrix
+        sx, sy = width / cw, height / ch
+        k = self.camera_matrix.copy()
+        k[0, 0] *= sx; k[0, 2] *= sx
+        k[1, 1] *= sy; k[1, 2] *= sy
+        return k
+
     def undistort_image(self, image: np.ndarray) -> np.ndarray:
         """Return ``image`` with lens distortion removed (same size)."""
-        return cv2.undistort(image, self.camera_matrix, self.dist_coeffs,
-                             None, self.camera_matrix)
+        h, w = image.shape[:2]
+        k = self._matrix_for(w, h)
+        return cv2.undistort(image, k, self.dist_coeffs, None, k)
 
     def undistort_points(self, points: np.ndarray) -> np.ndarray:
         """Undistort an (N, 2) array of pixel coordinates -> (N, 2) pixels."""

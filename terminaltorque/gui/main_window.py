@@ -256,6 +256,21 @@ class MainWindow(QtWidgets.QMainWindow):
             return self.camera_calibration.undistort_image(frame)
         return frame
 
+    def _view_state(self) -> str:
+        if self.undistort_enabled and self.camera_calibration is not None:
+            return f"undistort ON (rms {self.camera_calibration.rms:.2f}px)"
+        if self.camera_calibration is not None:
+            return "undistort OFF (calibrated)"
+        return "undistort OFF (no calibration)"
+
+    def _draw_view_banner(self, image):
+        """Stamp the undistort/resolution state onto the processed image."""
+        h, w = image.shape[:2]
+        on = self.undistort_enabled and self.camera_calibration is not None
+        color = (80, 220, 80) if on else (60, 180, 230)
+        cv2.putText(image, f"{self._view_state()}  {w}x{h}", (10, h - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+
     # ------------------------------------------------------------- capture
     def capture(self):
         if not self.ensure_camera():
@@ -285,11 +300,12 @@ class MainWindow(QtWidgets.QMainWindow):
         calibration = self._current_calibration(frame.shape)
         self.last_wells = detect_terminal_wells(frame, self.params, calibration)
         overlay = draw_detections(frame, self.last_wells)
+        self._draw_view_banner(overlay)
         self.live_tab.show_frame(overlay)
         units = "mm" if calibration is not None else "pixels"
         self.live_tab.show_results(self.last_wells, units)
         self.statusBar().showMessage(
-            f"Detected {len(self.last_wells)} well(s)"
+            f"Detected {len(self.last_wells)} well(s)  |  {self._view_state()}"
         )
         if self.plc_enabled and self.plc_auto_push and self.last_wells:
             self.push_to_plc()

@@ -119,6 +119,23 @@ def test_rejects_textured_noncircular_clutter():
     assert len(alt) < len(classic) / 10
 
 
+def test_center_unbiased_by_uneven_rim_lighting():
+    """A strong brightness gradient must not pull the fitted center off."""
+    import cv2
+    cx0, cy0, r0 = 320.0, 240.0, 60.0
+    img = np.full((480, 640, 3), 200, np.uint8)
+    cv2.circle(img, (int(cx0), int(cy0)), int(r0), (40, 40, 40), -1, cv2.LINE_AA)
+    grad = np.linspace(-120, 120, 640).astype(np.float32)   # bright left, dark right
+    img = np.clip(img.astype(np.float32) + grad[None, :, None], 0, 255).astype(np.uint8)
+
+    wells = detect_terminal_wells(
+        img, DetectionParams(min_radius_px=40, max_radius_px=80, expected_count=1))
+    assert wells
+    cx, cy = wells[0].center_px
+    assert abs(cx - cx0) < 1.0 and abs(cy - cy0) < 1.0     # geometry, not lighting
+    assert abs(wells[0].diameter_px - 2 * r0) < 4.0
+
+
 def test_merges_concentric_into_single_well():
     """A rim plus an inner post at the same center collapse to one well."""
     layout = [GroundTruthWell((220, 220), 50)]
