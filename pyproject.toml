@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terminaltorque"
+version = "0.1.0"
+description = "Vision-based detection of battery-lid terminal wells (center + diameter) for robotic nut torquing."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+terminaltorque = "terminaltorque.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["terminaltorque*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
