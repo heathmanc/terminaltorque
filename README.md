@@ -44,11 +44,32 @@ Four tabs:
   source) and streams it; **Capture** a frame, **Capture & Process** to detect
   wells (centers + diameters overlaid, results in a table), and **Push to PLC**.
 - **Camera** — pick the source (a real device index or the built-in synthetic
-  demo lid), **Detect supported modes** to list resolutions / frame rates and
-  apply one, and adjust **exposure, brightness, contrast, saturation, hue, gain,
-  and auto-exposure** live. Auto-exposure is on by default and the camera keeps
-  its own settings on connect — controls only change the camera when you move
-  them, so the picture is never darkened behind your back.
+  demo lid) and choose a capture backend. **Detect modes & controls** reads the
+  camera's *real* supported resolutions/frame rates and its *real* image
+  controls (true ranges) straight from the device — no live view required. For
+  a V4L2 camera the adjustment sliders are built from the hardware itself, so
+  exposure is driven through the correct `auto_exposure` menu instead of
+  OpenCV's broken normalized property (the usual cause of a black image).
+
+### Linux camera setup
+
+Real cameras use a V4L2 backend that reads modes and controls via `v4l2-ctl`:
+
+```bash
+sudo apt install v4l-utils      # required for real resolutions + image controls
+```
+
+Capture backend (Camera tab → *Capture backend*):
+
+- **GStreamer (recommended)** — needs an OpenCV built with GStreamer (e.g. the
+  distro package `python3-opencv`, or a custom build). The pip
+  `opencv-python`/`-headless` wheels are built **without** GStreamer; check with
+  `python -c "import cv2; print('GStreamer' in cv2.getBuildInformation())"`.
+- **V4L2** — works with the pip OpenCV wheel; the app requests an MJPG stream at
+  the selected resolution.
+
+Exposure and the other image controls are set through `v4l2-ctl` on the device
+node and work with **either** backend, whether or not a live view is running.
 - **Detection** — tell it **what hole size to look for** (min/max diameter in
   pixels or millimeters), the expected well count, and detection sensitivity,
   plus calibration (mm/px, or set it from a known length).

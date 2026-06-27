@@ -16,6 +16,7 @@ import numpy as np
 import cv2
 
 from ..synthetic import make_lid_image
+from . import v4l2
 
 
 @dataclass(frozen=True)
@@ -170,6 +171,117 @@ class OpenCVCameraSource(CameraSource):
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         if fps:
             self._cap.set(cv2.CAP_PROP_FPS, fps)
+
+
+class V4l2CameraSource(CameraSource):
+    """A real Linux camera with capture and controls handled the right way.
+
+    Capture uses either a GStreamer MJPG pipeline (preferred -- many UVC
+    cameras need this for full resolution/frame rate, and it sidesteps OpenCV's
+    flaky exposure handling) or the plain V4L2 backend with an MJPG FOURCC.
+    Image controls and supported modes go through ``v4l2-ctl`` on the device
+    node, so exposure/brightness/etc. use the camera's true ranges and probing
+    works without an open pipeline.
+    """
+
+    def __init__(self, index: int = 0, backend: str = "gstreamer",
+                 width: Optional[int] = None, height: Optional[int] = None,
+                 fps: Optional[float] = None, fourcc: str = "MJPG"):
+        self.index = index
+        self.device = f"/dev/video{index}"
+        self.backend = backend
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.fourcc = fourcc
+        self.name = f"Camera {index} ({backend})"
+        self._cap: Optional[cv2.VideoCapture] = None
+
+    # -- capture ---------------------------------------------------------
+    def _gst_pipeline(self) -> str:
+        w = self.width or 1280
+        h = self.height or 720
+        f = int(self.fps or 30)
+        if self.fourcc == "MJPG":
+            cap = f"image/jpeg,width={w},height={h},framerate={f}/1 ! jpegdec"
+        else:
+            cap = f"video/x-raw,width={w},height={h},framerate={f}/1"
+        return (f"v4l2src device={self.device} ! {cap} ! videoconvert ! "
+                f"appsink drop=true max-buffers=2")
+
+    def open(self) -> bool:
+        if self.backend == "gstreamer":
+            self._cap = cv2.VideoCapture(self._gst_pipeline(), cv2.CAP_GSTREAMER)
+        else:
+            self._cap = cv2.VideoCapture(self.index, cv2.CAP_V4L2)
+            if self._cap.isOpened():
+                if self.fourcc == "MJPG":
+                    self._cap.set(cv2.CAP_PROP_FOURCC,
+                                  cv2.VideoWriter_fourcc(*"MJPG"))
+                if self.width:
+                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                if self.height:
+                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                if self.fps:
+                    self._cap.set(cv2.CAP_PROP_FPS, self.fps)
+        return bool(self._cap and self._cap.isOpened())
+
+    def is_open(self) -> bool:
+        return bool(self._cap and self._cap.isOpened())
+
+    def read(self) -> Optional[np.ndarray]:
+        if not self.is_open():
+            return None
+        ok, frame = self._cap.read()
+        return frame if ok else None
+
+    def close(self) -> None:
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+
+    # -- controls (via v4l2-ctl on the device node) ----------------------
+    def controls(self) -> Dict[str, "v4l2.V4l2Control"]:
+        if v4l2.available():
+            return v4l2.list_controls(self.device)
+        return {}
+
+    def set_control(self, name: str, value: float) -> None:
+        if v4l2.available():
+            v4l2.set_control(self.device, name, int(value))
+
+    def get_control(self, name: str) -> Optional[int]:
+        if v4l2.available():
+            return v4l2.get_control(self.device, name)
+        return None
+
+    def set_auto_exposure(self, enabled: bool) -> None:
+        if v4l2.available():
+            v4l2.set_auto_exposure(self.device, enabled)
+
+    # The generic CameraSource property API maps onto v4l2 control names.
+    def set_property(self, key: str, value: float) -> None:
+        if key == "auto_exposure":
+            self.set_auto_exposure(bool(value))
+        else:
+            self.set_control(key, value)
+
+    def get_property(self, key: str) -> Optional[float]:
+        return self.get_control(key)
+
+    # -- modes (queried offline from the device node) --------------------
+    def probe_modes(self) -> List[tuple]:
+        if not v4l2.available():
+            return []
+        return [(m.width, m.height, m.fps) for m in v4l2.list_modes(self.device)]
+
+    def set_mode(self, width: int, height: int, fps: Optional[float] = None) -> None:
+        self.width, self.height = int(width), int(height)
+        if fps:
+            self.fps = fps
+        if self.is_open():            # re-open the pipeline at the new mode
+            self.close()
+            self.open()
 
 
 class SyntheticCameraSource(CameraSource):

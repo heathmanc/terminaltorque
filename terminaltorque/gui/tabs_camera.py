@@ -1,9 +1,9 @@
-"""Camera tab: choose the source, list modes, and adjust image controls.
+"""Camera tab: source, capture backend, real modes, and real controls.
 
-Connection is driven from the Live View's *Start Live* (or Capture) button -
-this tab only configures *which* camera and *how* it is tuned. The camera keeps
-its own auto-exposure on connect; nothing is forced onto it, so the picture is
-never darkened behind the operator's back.
+For a real V4L2 camera the image-adjustment sliders are built from the device's
+*actual* controls (true ranges, correct exposure handling) queried via
+``v4l2-ctl`` -- no capture pipeline required, so Detect works without starting a
+live view. The synthetic demo source keeps a fixed set of nominal sliders.
 """
 
 from __future__ import annotations
@@ -12,14 +12,24 @@ from PySide6 import QtWidgets
 
 from .camera_source import CAMERA_PROPERTIES
 from .widgets import PropertySlider
+from .v4l2 import AUTO_EXPOSURE_AUTO
+
+
+def _clear_layout(layout):
+    while layout.count():
+        item = layout.takeAt(0)
+        w = item.widget()
+        if w is not None:
+            w.setParent(None)   # remove from view immediately (no overlap flicker)
+            w.deleteLater()
 
 
 class CameraTab(QtWidgets.QWidget):
     def __init__(self, main):
         super().__init__()
         self.main = main
-        self._sliders = {}
-        self._toggles = {}
+        self._auto_exposure_cb = None
+        self._exposure_widget = None
         self._build()
 
     def _build(self):
@@ -34,11 +44,15 @@ class CameraTab(QtWidgets.QWidget):
 
         self.index_spin = QtWidgets.QSpinBox()
         self.index_spin.setRange(0, 16)
-        self.index_spin.setEnabled(False)
+
+        self.backend = QtWidgets.QComboBox()
+        self.backend.addItem("GStreamer (recommended)", "gstreamer")
+        self.backend.addItem("V4L2", "v4l2")
 
         hint = QtWidgets.QLabel(
-            "Pick the source here, then press Start Live (or Capture) on the "
-            "Live View tab - it connects automatically."
+            "Pick the source, then Detect to load this camera's real "
+            "resolutions and controls (no live view needed). Start Live or "
+            "Capture on the Live View connects automatically."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#8b96a0; font-size:11px;")
@@ -46,14 +60,17 @@ class CameraTab(QtWidgets.QWidget):
         form.addWidget(self.use_synthetic, 0, 0, 1, 2)
         form.addWidget(QtWidgets.QLabel("Device index:"), 1, 0)
         form.addWidget(self.index_spin, 1, 1)
-        form.addWidget(hint, 2, 0, 1, 2)
+        form.addWidget(QtWidgets.QLabel("Capture backend:"), 2, 0)
+        form.addWidget(self.backend, 2, 1)
+        form.addWidget(hint, 3, 0, 1, 2)
         root.addWidget(src)
 
         # --- resolution / frame rate ---
-        self.modes_box = QtWidgets.QGroupBox("Resolution / Frame Rate")
-        mgrid = QtWidgets.QGridLayout(self.modes_box)
-        self.btn_detect = QtWidgets.QPushButton("Detect supported modes")
-        self.btn_detect.clicked.connect(self._detect_modes)
+        modes_box = QtWidgets.QGroupBox("Resolution / Frame Rate")
+        mgrid = QtWidgets.QGridLayout(modes_box)
+        self.btn_detect = QtWidgets.QPushButton("Detect modes && controls")
+        self.btn_detect.setObjectName("Primary")
+        self.btn_detect.clicked.connect(self._detect)
         self.modes_combo = QtWidgets.QComboBox()
         self.btn_apply_mode = QtWidgets.QPushButton("Apply")
         self.btn_apply_mode.clicked.connect(self._apply_mode)
@@ -61,50 +78,22 @@ class CameraTab(QtWidgets.QWidget):
         mgrid.addWidget(self.btn_detect, 0, 0)
         mgrid.addWidget(self.modes_combo, 0, 1)
         mgrid.addWidget(self.btn_apply_mode, 0, 2)
-        root.addWidget(self.modes_box)
+        root.addWidget(modes_box)
 
-        # --- adjustments ---
+        # --- adjustments (rebuilt to match the active source) ---
         self.adjust_box = QtWidgets.QGroupBox("Image Adjustments")
-        grid = QtWidgets.QVBoxLayout(self.adjust_box)
-        for prop in CAMERA_PROPERTIES:
-            if prop.is_toggle:
-                cb = QtWidgets.QCheckBox(prop.label)
-                cb.setChecked(bool(prop.default))
-                cb.toggled.connect(
-                    lambda v, key=prop.key: self._toggle_changed(key, v)
-                )
-                self._toggles[prop.key] = cb
-                grid.addWidget(cb)
-            else:
-                slider = PropertySlider(
-                    prop.label, prop.minimum, prop.maximum, prop.default, prop.step,
-                    on_change=lambda v, key=prop.key: self.main.apply_camera_property(key, v),
-                )
-                self._sliders[prop.key] = slider
-                grid.addWidget(slider)
-
-        # Exposure is meaningful only with auto-exposure off.
-        if "exposure" in self._sliders and "auto_exposure" in self._toggles:
-            self._sliders["exposure"].setEnabled(
-                not self._toggles["auto_exposure"].isChecked()
-            )
-
-        note = QtWidgets.QLabel(
-            "Ranges are nominal; a real camera rescales or clamps each control "
-            "per its driver. Exposure applies only when Auto Exposure is off."
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet("color:#8b96a0; font-size:11px;")
-        grid.addWidget(note)
+        self.adjust_layout = QtWidgets.QVBoxLayout(self.adjust_box)
         root.addWidget(self.adjust_box)
         root.addStretch(1)
 
         self._sync_source_widgets()
-        self.on_camera_connected(False)
+        self._build_nominal_adjustments()   # synthetic by default
 
     # -- source --------------------------------------------------------------
     def _sync_source_widgets(self):
-        self.index_spin.setEnabled(not self.use_synthetic.isChecked())
+        real = not self.use_synthetic.isChecked()
+        self.index_spin.setEnabled(real)
+        self.backend.setEnabled(real)
 
     def use_synthetic_source(self) -> bool:
         return self.use_synthetic.isChecked()
@@ -112,43 +101,136 @@ class CameraTab(QtWidgets.QWidget):
     def device_index(self) -> int:
         return self.index_spin.value()
 
-    # -- adjustments ---------------------------------------------------------
-    def _toggle_changed(self, key: str, value: bool):
-        self.main.apply_camera_property(key, 1.0 if value else 0.0)
-        if key == "auto_exposure" and "exposure" in self._sliders:
-            # Disable manual exposure while auto is on; apply it when turned off.
-            self._sliders["exposure"].setEnabled(not value)
-            if not value:
-                self.main.apply_camera_property("exposure", self._sliders["exposure"].value())
+    def capture_backend(self) -> str:
+        return self.backend.currentData()
+
+    def selected_mode(self):
+        return self.modes_combo.currentData()
 
     def on_camera_connected(self, connected: bool):
-        self.adjust_box.setEnabled(connected)
-        self.modes_box.setEnabled(connected)
+        self.adjust_box.setEnabled(True)   # controls work offline via v4l2-ctl
 
     def apply_initial_settings(self):
-        """Push only the auto-exposure state on connect (keeps the image bright).
+        """On connect, enable auto-exposure so the image is bright.
 
-        Deliberately does NOT blast every slider at the camera; forcing manual
-        exposure/gain on connect is what previously darkened the picture.
+        For a real camera this sets the V4L2 auto_exposure menu to aperture
+        priority -- the actual fix for the dark picture -- instead of forcing a
+        bogus manual value.
         """
-        if "auto_exposure" in self._toggles:
-            on = self._toggles["auto_exposure"].isChecked()
-            self.main.apply_camera_property("auto_exposure", 1.0 if on else 0.0)
+        if self._auto_exposure_cb is not None:
+            self.main.set_camera_auto_exposure(self._auto_exposure_cb.isChecked())
 
     # -- modes ---------------------------------------------------------------
-    def _detect_modes(self):
-        modes = self.main.probe_camera_modes()
+    def _detect(self):
+        modes = self.main.query_modes()
         self.modes_combo.clear()
-        if not modes:
-            self.modes_combo.addItem("No camera / no modes found")
+        if modes:
+            for w, h, fps in modes:
+                fps_txt = f"{fps:g} fps" if fps else "fps n/a"
+                self.modes_combo.addItem(f"{w} x {h}  @  {fps_txt}", (w, h, fps))
+            self.btn_apply_mode.setEnabled(True)
+        else:
+            self.modes_combo.addItem("No modes found (is v4l2-ctl installed?)")
             self.btn_apply_mode.setEnabled(False)
-            return
-        for w, h, fps in modes:
-            fps_txt = f"{fps:g} fps" if fps else "fps n/a"
-            self.modes_combo.addItem(f"{w} x {h}  @  {fps_txt}", (w, h, fps))
-        self.btn_apply_mode.setEnabled(True)
+
+        controls = self.main.query_controls()
+        self._rebuild_adjustments(controls)
 
     def _apply_mode(self):
         data = self.modes_combo.currentData()
         if data:
             self.main.apply_camera_mode(*data)
+
+    # -- adjustments ---------------------------------------------------------
+    def _rebuild_adjustments(self, controls):
+        _clear_layout(self.adjust_layout)
+        self._auto_exposure_cb = None
+        self._exposure_widget = None
+        if controls is None:
+            self._build_nominal_adjustments()
+        elif not controls:
+            self._build_no_controls_notice()
+        else:
+            self._build_dynamic_adjustments(controls)
+
+    def _build_no_controls_notice(self):
+        msg = QtWidgets.QLabel(
+            "No V4L2 controls found. Install v4l2-utils (`sudo apt install "
+            "v4l-utils`) to expose this camera's exposure and image controls."
+        )
+        msg.setWordWrap(True)
+        msg.setStyleSheet("color:#e6b800;")
+        self.adjust_layout.addWidget(msg)
+
+    def _build_nominal_adjustments(self):
+        """Fixed sliders for the synthetic demo source."""
+        for prop in CAMERA_PROPERTIES:
+            if prop.is_toggle:
+                cb = QtWidgets.QCheckBox(prop.label)
+                cb.setChecked(bool(prop.default))
+                cb.toggled.connect(self._on_auto_exposure_toggled)
+                self._auto_exposure_cb = cb
+                self.adjust_layout.addWidget(cb)
+            else:
+                slider = PropertySlider(
+                    prop.label, prop.minimum, prop.maximum, prop.default, prop.step,
+                    on_change=lambda v, key=prop.key: self.main.set_camera_control(key, v),
+                )
+                if prop.key == "exposure":
+                    self._exposure_widget = slider
+                self.adjust_layout.addWidget(slider)
+        self._sync_exposure_enabled()
+
+    def _build_dynamic_adjustments(self, controls):
+        """Sliders built from a real camera's v4l2 controls (true ranges)."""
+        if "auto_exposure" in controls:
+            c = controls["auto_exposure"]
+            cb = QtWidgets.QCheckBox("Auto Exposure")
+            cb.setChecked(c.value == AUTO_EXPOSURE_AUTO)
+            cb.toggled.connect(self._on_auto_exposure_toggled)
+            self._auto_exposure_cb = cb
+            self.adjust_layout.addWidget(cb)
+
+        for name, c in controls.items():
+            if name == "auto_exposure":
+                continue
+            label = name.replace("_", " ").title()
+            if c.type == "bool":
+                cb = QtWidgets.QCheckBox(label)
+                cb.setChecked(bool(c.value))
+                cb.setEnabled(not c.inactive)
+                cb.toggled.connect(
+                    lambda v, n=name: self.main.set_camera_control(n, 1 if v else 0)
+                )
+                self.adjust_layout.addWidget(cb)
+            else:  # int or menu -> slider over the real range
+                slider = PropertySlider(
+                    label, c.minimum, c.maximum, c.value, max(1, c.step),
+                    on_change=lambda v, n=name: self.main.set_camera_control(n, v),
+                )
+                slider.setEnabled(not c.inactive)
+                if name == "exposure_time_absolute":
+                    self._exposure_widget = slider
+                self.adjust_layout.addWidget(slider)
+
+        note = QtWidgets.QLabel(
+            "Controls reflect this camera's real V4L2 ranges. Exposure applies "
+            "only with Auto Exposure off."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#8b96a0; font-size:11px;")
+        self.adjust_layout.addWidget(note)
+        self._sync_exposure_enabled()
+
+    # -- exposure wiring -----------------------------------------------------
+    def _on_auto_exposure_toggled(self, on: bool):
+        self.main.set_camera_auto_exposure(on)
+        self._sync_exposure_enabled()
+        if not on and self._exposure_widget is not None:
+            # Re-assert the manual exposure value when leaving auto.
+            key = "exposure" if self.use_synthetic_source() else "exposure_time_absolute"
+            self.main.set_camera_control(key, self._exposure_widget.value())
+
+    def _sync_exposure_enabled(self):
+        if self._exposure_widget is not None and self._auto_exposure_cb is not None:
+            self._exposure_widget.setEnabled(not self._auto_exposure_cb.isChecked())

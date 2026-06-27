@@ -11,9 +11,10 @@ from ..calibration import Calibration, default_origin
 from ..plc import PlcConfig, ALL_GROUPS, push_to_plc
 from .camera_source import (
     CameraSource,
-    OpenCVCameraSource,
     SyntheticCameraSource,
+    V4l2CameraSource,
 )
+from . import v4l2
 from .style import DARK_INDUSTRIAL_QSS
 from .widgets import StatusLED
 from .tabs_live import LiveViewTab
@@ -117,7 +118,48 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_camera(SyntheticCameraSource())
 
     def connect_camera(self, index: int):
-        self._set_camera(OpenCVCameraSource(index))
+        mode = self.camera_tab.selected_mode()
+        w = h = fps = None
+        if mode:
+            w, h, fps = mode
+        self._set_camera(V4l2CameraSource(
+            index, backend=self.camera_tab.capture_backend(),
+            width=w, height=h, fps=fps,
+        ))
+
+    # -- camera control routing (synthetic source vs real v4l2 device) -----
+    def selected_device(self) -> str:
+        return f"/dev/video{self.camera_tab.device_index()}"
+
+    def query_modes(self):
+        if self.camera_tab.use_synthetic_source():
+            return SyntheticCameraSource().probe_modes()
+        if v4l2.available():
+            return [(m.width, m.height, m.fps)
+                    for m in v4l2.list_modes(self.selected_device())]
+        return []
+
+    def query_controls(self):
+        # None -> synthetic (use nominal sliders); dict -> real controls.
+        if self.camera_tab.use_synthetic_source():
+            return None
+        if v4l2.available():
+            return v4l2.list_controls(self.selected_device())
+        return {}
+
+    def set_camera_control(self, key, value):
+        if self.camera_tab.use_synthetic_source():
+            if self.camera is not None:
+                self.camera.set_property(key, value)
+        elif v4l2.available():
+            v4l2.set_control(self.selected_device(), key, int(value))
+
+    def set_camera_auto_exposure(self, on: bool):
+        if self.camera_tab.use_synthetic_source():
+            if self.camera is not None:
+                self.camera.set_property("auto_exposure", 1.0 if on else 0.0)
+        elif v4l2.available():
+            v4l2.set_auto_exposure(self.selected_device(), on)
 
     def ensure_camera(self) -> bool:
         """Connect using the Camera tab's current source selection if needed."""

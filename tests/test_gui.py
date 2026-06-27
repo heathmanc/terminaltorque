@@ -77,6 +77,60 @@ def test_probe_and_apply_camera_mode(window):
     assert frame.shape[1] == 1280 and frame.shape[0] == 720
 
 
+REAL_CTRLS = """
+                     brightness 0x00980900 (int)    : min=-64 max=64 step=1 default=0 value=0
+                            hue 0x00980903 (int)    : min=-2000 max=2000 step=1 default=0 value=0
+        white_balance_automatic 0x0098090c (bool)   : default=1 value=1
+                  auto_exposure 0x009a0901 (menu)   : min=0 max=3 default=3 value=1 (Manual Mode)
+         exposure_time_absolute 0x009a0902 (int)    : min=3 max=2047 step=1 default=166 value=2047
+"""
+
+
+def test_camera_tab_builds_dynamic_controls_from_v4l2(window):
+    from terminaltorque.gui.v4l2 import parse_controls
+    controls = parse_controls(REAL_CTRLS)
+
+    tab = window.camera_tab
+    ae_calls = []
+    window.set_camera_auto_exposure = lambda on: ae_calls.append(on)
+
+    tab._rebuild_adjustments(controls)
+
+    # Auto-exposure checkbox + a manual exposure slider were created.
+    assert tab._auto_exposure_cb is not None
+    assert tab._exposure_widget is not None
+    # auto_exposure value=1 (Manual) -> unchecked, manual exposure enabled.
+    assert not tab._auto_exposure_cb.isChecked()
+    assert tab._exposure_widget.isEnabled()
+
+    # Turning Auto on routes to the v4l2 auto-exposure path and disables manual.
+    tab._auto_exposure_cb.setChecked(True)
+    assert ae_calls[-1] is True
+    assert not tab._exposure_widget.isEnabled()
+
+
+def test_real_auto_exposure_drives_v4l2_menu(window, monkeypatch):
+    """The dark-image fix: connect/auto routes to the V4L2 auto_exposure menu."""
+    from terminaltorque.gui import v4l2 as v
+    window.camera_tab.use_synthetic.setChecked(False)
+    calls = []
+    monkeypatch.setattr(v, "available", lambda: True)
+    monkeypatch.setattr(v, "set_auto_exposure",
+                        lambda dev, on: calls.append((dev, on)))
+    window.set_camera_auto_exposure(True)
+    assert calls == [("/dev/video0", True)]
+
+
+def test_query_modes_real_uses_v4l2(window, monkeypatch):
+    from terminaltorque.gui import v4l2 as v
+    window.camera_tab.use_synthetic.setChecked(False)
+    monkeypatch.setattr(v, "available", lambda: True)
+    monkeypatch.setattr(v, "list_modes",
+                        lambda dev: [v.V4l2Mode(1920, 1080, 30.0, "MJPG")])
+    modes = window.query_modes()
+    assert modes == [(1920, 1080, 30.0)]
+
+
 def test_camera_property_changes_live_image(window):
     window.connect_synthetic_camera()
     f1 = window.camera.read().copy()
