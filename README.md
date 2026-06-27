@@ -70,8 +70,79 @@ JSON to stdout (or `--output file.json`), ready for the robot controller:
 }
 ```
 
-Wells are sorted strongest-first. The process exits `0` when at least one well
-is found and `2` when none are, so the robot side can branch on the exit code.
+Wells are sorted strongest-first. Exit codes let the robot/operator branch:
+`0` = wells found (and the PLC push succeeded if requested), `2` = no wells
+detected, `3` = wells detected but the PLC push failed.
+
+## Pushing to an Allen-Bradley PLC
+
+Results can be pushed straight into a Logix PLC (ControlLogix / CompactLogix)
+over EtherNet/IP, so the robot program reads center and diameter from tags
+instead of parsing JSON. This uses [`pycomm3`](https://pycomm3.dev):
+
+```bash
+pip install "pycomm3>=1.2"      # or: pip install -e ".[plc]"
+
+# CompactLogix (no slot), calibrated -> values land in mm:
+python -m terminaltorque --camera 0 --expected 2 --calibration cal.json \
+    --plc-ip 192.168.1.10
+
+# ControlLogix in slot 0, custom tag prefix, wait for the PLC to acknowledge:
+python -m terminaltorque --image lid.png --expected 2 --calibration cal.json \
+    --plc-ip 192.168.1.10 --plc-slot 0 --plc-prefix Vision --plc-wait-ack
+```
+
+### Tag layout
+
+For `--plc-prefix Vision` and `--plc-max-wells N`, create these tags in the PLC:
+
+| Tag | Type | Meaning |
+|-----|------|---------|
+| `Vision_Count` | `DINT` | number of valid wells this cycle |
+| `Vision_X[0..N-1]` | `REAL[N]` | well center X (mm if calibrated) |
+| `Vision_Y[0..N-1]` | `REAL[N]` | well center Y |
+| `Vision_Dia[0..N-1]` | `REAL[N]` | well diameter |
+| `Vision_Valid[0..N-1]` | `BOOL[N]` | true for populated slots |
+| `Vision_DataReady` | `BOOL` | set after a complete write |
+
+### Handshake
+
+The push is ordered so the robot can never latch a half-written result:
+
+1. `Vision_DataReady` is cleared.
+2. All geometry is written. **Every** array slot up to `--plc-max-wells` is
+   written each cycle — unused slots are zeroed and marked `Valid = false`, so
+   the robot never reads stale geometry from a previous part.
+3. `Vision_DataReady` is set.
+
+Gate the robot logic on `Vision_DataReady`. With `--plc-wait-ack` the tool
+blocks until the PLC **clears** `Vision_DataReady` (its acknowledgement that it
+consumed the data), up to `--plc-ack-timeout` seconds.
+
+Wells are sorted strongest-first, so `Vision_X[0]` is the highest-confidence
+well. If you need a fixed terminal order (e.g. positive vs. negative post),
+sort by `center_mm` on the robot side, or pin it to your fixture geometry.
+
+> **Coordinates:** push with a calibration loaded (`--calibration` or a scale
+> option) so the PLC receives millimeters. Without it the tool still pushes, but
+> the values are pixels and it prints a warning.
+
+### From code
+
+```python
+from terminaltorque import detect_terminal_wells, DetectionParams, Calibration
+from terminaltorque.plc import PlcConfig, push_to_plc
+from terminaltorque.io_utils import grab_frame
+
+wells = detect_terminal_wells(
+    grab_frame(0),
+    DetectionParams(min_radius_px=30, max_radius_px=60, expected_count=2),
+    calibration=Calibration.load("cal.json"),
+)
+config = PlcConfig.from_ip("192.168.1.10", slot=0, prefix="Vision", max_wells=8)
+status = push_to_plc(wells, config, wait_for_ack=True)
+print(status)  # {'written': 2, 'handshake_set': True, 'acked': True}
+```
 
 ## Calibration
 
@@ -141,6 +212,7 @@ count, center accuracy, diameter accuracy, and calibration math.
 |------|---------|
 | `terminaltorque/detector.py` | Hough detection + sub-pixel refinement |
 | `terminaltorque/calibration.py` | Pixel ↔ millimeter mapping |
+| `terminaltorque/plc.py` | Push results to an Allen-Bradley Logix PLC |
 | `terminaltorque/io_utils.py` | Load image / grab camera frame |
 | `terminaltorque/synthetic.py` | Synthetic lid generator for demos & tests |
 | `terminaltorque/cli.py` | Command-line interface |

@@ -1,2 +1,4 @@
 numpy>=1.24
 opencv-python-headless>=4.8
+# Allen-Bradley PLC push (EtherNet/IP). Optional: only needed for --plc-ip.
+pycomm3>=1.2

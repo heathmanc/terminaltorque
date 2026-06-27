@@ -61,6 +61,20 @@ def build_parser() -> argparse.ArgumentParser:
     # Output
     p.add_argument("--annotate", help="Write an annotated debug image to this path.")
     p.add_argument("--output", help="Write result JSON to this path (default stdout).")
+
+    # Allen-Bradley PLC push (EtherNet/IP via pycomm3)
+    plc = p.add_argument_group("Allen-Bradley PLC push")
+    plc.add_argument("--plc-ip", help="PLC IP address; enables pushing results.")
+    plc.add_argument("--plc-slot", type=int, default=None,
+                     help="Processor slot for ControlLogix (omit for CompactLogix).")
+    plc.add_argument("--plc-prefix", default="Vision",
+                     help="Tag name prefix, e.g. Vision -> Vision_X[i] (default: Vision).")
+    plc.add_argument("--plc-max-wells", type=int, default=8,
+                     help="Size of the PLC result arrays (default: 8).")
+    plc.add_argument("--plc-wait-ack", action="store_true",
+                     help="Block until the PLC clears the DataReady bit.")
+    plc.add_argument("--plc-ack-timeout", type=float, default=5.0,
+                     help="Seconds to wait for the PLC ack (default: 5).")
     return p
 
 
@@ -91,6 +105,23 @@ def _load_source(args):
     return image
 
 
+def _push_plc(args, wells) -> dict:
+    from .plc import PlcConfig, push_to_plc
+
+    config = PlcConfig.from_ip(
+        ip=args.plc_ip,
+        slot=args.plc_slot,
+        prefix=args.plc_prefix,
+        max_wells=args.plc_max_wells,
+    )
+    return push_to_plc(
+        wells,
+        config,
+        wait_for_ack=args.plc_wait_ack,
+        ack_timeout_s=args.plc_ack_timeout,
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -114,12 +145,31 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.annotate:
         io_utils.save_image(args.annotate, draw_detections(image, wells))
 
+    plc_status = None
+    plc_error = None
+    if args.plc_ip:
+        if calibration is None:
+            print(
+                "warning: pushing to PLC without calibration; X/Y/diameter are "
+                "in PIXELS, not millimeters. Provide --calibration or a scale.",
+                file=sys.stderr,
+            )
+        try:
+            plc_status = _push_plc(args, wells)
+        except Exception as exc:  # noqa: BLE001 - report any push failure cleanly
+            plc_error = f"{type(exc).__name__}: {exc}"
+            print(f"error: PLC push failed: {plc_error}", file=sys.stderr)
+
     result = {
         "image_size": {"width": image.shape[1], "height": image.shape[0]},
         "calibrated": calibration is not None,
         "count": len(wells),
         "wells": [w.to_dict() for w in wells],
     }
+    if plc_status is not None:
+        result["plc"] = plc_status
+    elif plc_error is not None:
+        result["plc"] = {"error": plc_error}
     payload = json.dumps(result, indent=2)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
@@ -127,8 +177,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         print(payload)
 
-    # Non-zero exit if nothing was found, so the robot side can branch on it.
-    return 0 if wells else 2
+    # Exit codes let the operator/robot side branch:
+    #   0 = wells found (and PLC push succeeded, if requested)
+    #   2 = no wells detected
+    #   3 = wells detected but the PLC push failed
+    if not wells:
+        return 2
+    if plc_error is not None:
+        return 3
+    return 0
 
 
 if __name__ == "__main__":
