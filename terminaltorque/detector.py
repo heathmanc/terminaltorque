@@ -52,16 +52,30 @@ class DetectionParams:
     # min radius so two wells cannot merge into one detection.
     min_dist_px: Optional[float] = None
 
+    # Detection method. The "alt" gradient transform (HOUGH_GRADIENT_ALT)
+    # scores true circularity and rejects the texture/text/scratch "circles"
+    # the classic transform hallucinates -- it is the right default. Set False
+    # to fall back to the classic HOUGH_GRADIENT (uses accumulator_threshold).
+    use_gradient_alt: bool = True
+
+    # Circularity strictness for the "alt" method, in [0, 1]. Higher accepts
+    # only rounder shapes (fewer false positives); lower is more permissive.
+    circularity: float = 0.8
+
     # Hough accumulator inverse resolution. 1.0 = full res; larger is faster
-    # but coarser.
+    # but coarser. The "alt" method wants ~1.5.
     dp: float = 1.2
 
     # Canny high threshold passed to HoughCircles (low is half of this).
     canny_high: float = 120.0
 
-    # Accumulator threshold for circle centers. Lower = more (and weaker)
-    # circles. Tune up if you get false positives, down if wells are missed.
+    # Accumulator threshold for the CLASSIC method's centers. Lower = more (and
+    # weaker) circles. Ignored when use_gradient_alt is True.
     accumulator_threshold: float = 30.0
+
+    # Merge near-concentric detections (e.g. a well's rim and the terminal post
+    # inside it), keeping the larger -- the well opening the robot torques over.
+    merge_concentric: bool = True
 
     # Gaussian blur kernel (odd). Smooths noise before edge detection.
     blur_ksize: int = 5
@@ -71,6 +85,13 @@ class DetectionParams:
 
     # Half-width (in radii) of the ROI used for sub-pixel refinement.
     refine_margin: float = 0.35
+
+    # Minimum fraction of a candidate's circumference that must coincide with a
+    # real image edge for it to be accepted, in [0, 1]. The Hough accumulator
+    # happily "finds" circles in texture and noise where no continuous rim
+    # exists; this rejects them. Raise toward 0.7 for very clean machined wells;
+    # lower toward 0.3 if real wells are partly occluded. 0 disables the check.
+    min_edge_support: float = 0.45
 
     def resolved_min_dist(self) -> float:
         if self.min_dist_px is not None:
@@ -168,6 +189,30 @@ def _refine_center(
     return rx, ry
 
 
+def _edge_support(
+    edges: np.ndarray, cx: float, cy: float, r: float, samples: int = 72, band: int = 2
+) -> float:
+    """Fraction of the circle's circumference that lies on an image edge.
+
+    Samples points evenly around the circle and checks a small radial band at
+    each for a Canny edge pixel. A genuine well rim scores near 1.0; a circle
+    hallucinated from scattered texture scores low.
+    """
+    if r < 1:
+        return 0.0
+    h, w = edges.shape[:2]
+    angles = np.linspace(0.0, 2.0 * np.pi, samples, endpoint=False)
+    cos_a = np.cos(angles)
+    sin_a = np.sin(angles)
+    radii = r + np.arange(-band, band + 1)[:, None]  # (2*band+1, 1)
+    xs = np.rint(cx + radii * cos_a).astype(np.intp)  # (bands, samples)
+    ys = np.rint(cy + radii * sin_a).astype(np.intp)
+    valid = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+    hit = (edges[np.clip(ys, 0, h - 1), np.clip(xs, 0, w - 1)] > 0) & valid
+    # A circumference sample counts if any pixel in its radial band is an edge.
+    return float(hit.any(axis=0).mean())
+
+
 def detect_terminal_wells(
     image: np.ndarray,
     params: Optional[DetectionParams] = None,
@@ -191,36 +236,65 @@ def detect_terminal_wells(
     k = params.blur_ksize | 1  # force odd
     blurred = cv2.GaussianBlur(gray, (k, k), 0)
 
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=params.dp,
-        minDist=params.resolved_min_dist(),
-        param1=params.canny_high,
-        param2=params.accumulator_threshold,
-        minRadius=int(params.min_radius_px),
-        maxRadius=int(params.max_radius_px),
-    )
+    if params.use_gradient_alt:
+        circles = cv2.HoughCircles(
+            blurred,
+            cv2.HOUGH_GRADIENT_ALT,
+            dp=max(1.5, params.dp),
+            minDist=params.resolved_min_dist(),
+            param1=300.0,                 # ALT wants a high Canny threshold
+            param2=params.circularity,    # circularity in [0, 1]
+            minRadius=int(params.min_radius_px),
+            maxRadius=int(params.max_radius_px),
+        )
+    else:
+        circles = cv2.HoughCircles(
+            blurred,
+            cv2.HOUGH_GRADIENT,
+            dp=params.dp,
+            minDist=params.resolved_min_dist(),
+            param1=params.canny_high,
+            param2=params.accumulator_threshold,
+            minRadius=int(params.min_radius_px),
+            maxRadius=int(params.max_radius_px),
+        )
 
     wells: List[TerminalWell] = []
     if circles is None:
         return wells
 
     circles = np.squeeze(circles, axis=0)  # (N, 3): x, y, r
-    # HoughCircles returns strongest first; use rank as a confidence proxy in
-    # [0, 1] since the raw accumulator value is not exposed.
-    n = len(circles)
-    for rank, (cx, cy, r) in enumerate(circles):
+    if circles.ndim == 1:
+        circles = circles[None, :]
+
+    # Edge map used to verify each candidate is backed by a real circular rim.
+    edges = cv2.Canny(blurred, max(1.0, params.canny_high * 0.5), params.canny_high)
+
+    # Collect (cx, cy, r, support) for candidates with real edge support.
+    candidates = []
+    for cx, cy, r in circles:
         cx, cy, r = float(cx), float(cy), float(r)
+        if r < 1:
+            continue
+        support = _edge_support(edges, cx, cy, r)
+        if support < params.min_edge_support:
+            continue
+        candidates.append((cx, cy, r, support))
+
+    if params.merge_concentric:
+        candidates = _merge_concentric(candidates)
+
+    for cx, cy, r, support in candidates:
         refined = _refine_center(gray, cx, cy, r, params.refine_margin)
         is_refined = refined is not None
         if is_refined:
             cx, cy = refined
-        confidence = 1.0 - (rank / n) * 0.5 if n > 1 else 1.0
+        # Confidence is the measured edge support: how complete the rim is, in
+        # [0, 1]. This is a real quality signal, unlike the Hough vote rank.
         well = TerminalWell(
             center_px=(cx, cy),
             diameter_px=2.0 * r,
-            confidence=confidence,
+            confidence=round(support, 4),
             refined=is_refined,
         )
         if calibration is not None:
@@ -233,6 +307,24 @@ def detect_terminal_wells(
     if params.expected_count is not None:
         wells = wells[: params.expected_count]
     return wells
+
+
+def _merge_concentric(candidates):
+    """Drop smaller circles sharing a center with a larger one.
+
+    A terminal well often yields both an outer rim and an inner post/nut circle
+    at the same center. The robot torques over the well opening, so keep the
+    larger circle. ``candidates`` is a list of ``(cx, cy, r, support)``.
+    """
+    kept = []
+    for cx, cy, r, support in sorted(candidates, key=lambda c: c[2], reverse=True):
+        concentric = any(
+            (cx - kx) ** 2 + (cy - ky) ** 2 <= (0.5 * kr) ** 2
+            for kx, ky, kr, _ in kept
+        )
+        if not concentric:
+            kept.append((cx, cy, r, support))
+    return kept
 
 
 def draw_detections(

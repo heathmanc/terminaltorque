@@ -10,14 +10,21 @@ a robot can position over each terminal and torque the nut.
 ## How it works
 
 1. **Grayscale + blur** to suppress sensor noise.
-2. **Hough gradient circle transform** (`cv2.HoughCircles`) finds candidate
-   circles. It is robust to uneven lighting and partial occlusion and is the
-   standard tool for circular-feature detection.
-3. **Sub-pixel center refinement.** The raw Hough center is only accurate to
+2. **Circularity-scoring Hough transform** (`cv2.HoughCircles` with
+   `HOUGH_GRADIENT_ALT`) finds candidates and scores how truly circular each is.
+   Unlike the classic transform, it does *not* hallucinate "circles" out of
+   text, scratches, and noise — the strictness is the **Circularity** control
+   (`--circularity`, default 0.8). The classic transform is still available via
+   `--classic` for unusual cases.
+3. **Edge-support filter + concentric merge.** Each candidate is verified
+   against the real edge map (rejecting any whose rim isn't actually there), and
+   a well's outer rim and the post inside it are merged into one detection — the
+   well opening the robot torques over.
+4. **Sub-pixel center refinement.** The raw Hough center is only accurate to
    ~1 px, which can be a millimeter or more of robot error. Each candidate is
    refined to the intensity-weighted centroid of its edge ring, tightening
    repeatability to a fraction of a pixel on a clean machined well.
-4. **Calibration** maps pixel centers and diameters to millimeters in the
+5. **Calibration** maps pixel centers and diameters to millimeters in the
    robot's work plane.
 
 ## Industrial HMI
@@ -226,9 +233,12 @@ The most important parameter is the **radius range** (`--min-radius` /
 `--max-radius`): set it to your physical well size in pixels to reject spurious
 circles from bolt heads, text, or reflections. Then:
 
-- Missing wells → lower `--accumulator`.
-- False circles → raise `--accumulator`, tighten the radius range, or set
-  `--expected N` to keep only the strongest N.
+- False circles → raise `--circularity` toward 0.95, tighten the radius range,
+  or set `--expected N` to keep only the strongest N.
+- Missing wells → lower `--circularity` toward 0.6.
+
+In the HMI these are the **Circularity (strictness)**, **Min/Max diameter**, and
+**Expected wells** controls on the Detection tab.
 
 ## Tests
 

@@ -92,3 +92,41 @@ def test_no_circles_returns_empty():
     blank = np.full((200, 200, 3), 150, dtype=np.uint8)
     wells = detect_terminal_wells(blank, DetectionParams(min_radius_px=20, max_radius_px=40))
     assert wells == []
+
+
+def test_rejects_textured_noncircular_clutter():
+    """Busy surface (lines, text, noise) but no real wells -> ~no detections."""
+    rng = np.random.default_rng(7)
+    import cv2
+    img = np.full((480, 640, 3), 150, np.uint8)
+    for _ in range(40):
+        p1 = tuple(rng.integers(0, 640, 2).tolist())
+        p2 = tuple(rng.integers(0, 480, 2).tolist())
+        cv2.line(img, p1, p2, (90, 90, 90), 1)
+    cv2.putText(img, "WARNING 12V", (60, 240),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (40, 40, 40), 2)
+    img = np.clip(img + rng.normal(0, 12, img.shape), 0, 255).astype(np.uint8)
+
+    # Classic transform with no edge filtering hallucinates a field of circles.
+    classic = detect_terminal_wells(img, DetectionParams(
+        min_radius_px=10, max_radius_px=80,
+        use_gradient_alt=False, min_edge_support=0.0))
+    # The default (alt) method rejects the overwhelming majority of them.
+    alt = detect_terminal_wells(img, DetectionParams(min_radius_px=10, max_radius_px=80))
+
+    assert len(classic) >= 20          # the problem the user reported
+    assert len(alt) <= 3               # essentially cleaned up
+    assert len(alt) < len(classic) / 10
+
+
+def test_merges_concentric_into_single_well():
+    """A rim plus an inner post at the same center collapse to one well."""
+    layout = [GroundTruthWell((220, 220), 50)]
+    image, _ = make_lid_image(size=(440, 440), wells=layout)
+    # Permissive radius range admits the inner post circle too.
+    wells = detect_terminal_wells(
+        image, DetectionParams(min_radius_px=10, max_radius_px=90)
+    )
+    assert len(wells) == 1
+    assert abs(wells[0].center_px[0] - 220) < 3
+    assert abs(wells[0].center_px[1] - 220) < 3

@@ -44,7 +44,7 @@ def test_connect_synthetic_and_capture_process(window):
 
     # Constrain detection to the synthetic wells and process.
     window.set_detection(min_radius_px=25, max_radius_px=70,
-                         expected_count=2, accumulator_threshold=30.0)
+                         expected_count=2, circularity=0.8)
     window.capture_and_process()
 
     assert len(window.last_wells) == 2
@@ -77,7 +77,7 @@ def test_detection_tab_mm_conversion(window):
 def test_plc_push_uses_fake_driver(window):
     # Detect something first.
     window.connect_synthetic_camera()
-    window.set_detection(25, 70, 2, 30.0)
+    window.set_detection(25, 70, 2, 0.8)
     window.capture_and_process()
     assert window.last_wells
 
@@ -103,6 +103,36 @@ def test_plc_push_uses_fake_driver(window):
                          enabled_groups=window.plc_enabled_groups)
     assert status["written"] == 2
     assert any(t[0] == "Vision_Count" for t in captured["writes"])
+
+
+def test_expected_count_auto_is_reversible(window):
+    tab = window.detection_tab
+    # Default: Auto checked -> no count limit.
+    assert tab.auto_count.isChecked()
+    tab.apply()
+    assert window.params.expected_count is None
+
+    # Uncheck Auto -> spin enabled, count applied.
+    tab.auto_count.setChecked(False)
+    tab.expected.setValue(2)
+    tab.apply()
+    assert tab.expected.isEnabled()
+    assert window.params.expected_count == 2
+
+    # Re-check Auto -> back to None (the bug being fixed).
+    tab.auto_count.setChecked(True)
+    tab.apply()
+    assert window.params.expected_count is None
+    assert not tab.expected.isEnabled()
+
+
+def test_capture_freezes_live_stream(window):
+    window.connect_synthetic_camera()
+    window.start_live()
+    assert window.live_timer.isActive()
+    window.capture()
+    # Capture must stop the live stream so the frame (and overlay) stays put.
+    assert not window.live_timer.isActive()
 
 
 def test_plc_group_disable_drops_tag(window):

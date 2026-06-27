@@ -46,28 +46,36 @@ class DetectionTab(QtWidgets.QWidget):
         # --- detection tuning ---
         tune = QtWidgets.QGroupBox("Detection")
         tgrid = QtWidgets.QGridLayout(tune)
+        self.auto_count = QtWidgets.QCheckBox("Auto (keep every well found)")
+        self.auto_count.setChecked(True)
+        self.auto_count.toggled.connect(self._on_change)
+
         self.expected = QtWidgets.QSpinBox()
-        self.expected.setRange(0, 64)
-        self.expected.setValue(0)
-        self.expected.setSpecialValueText("Auto")
+        self.expected.setRange(1, 64)
+        self.expected.setValue(2)
+        self.expected.setEnabled(False)  # enabled only when Auto is unchecked
         self.expected.valueChanged.connect(self._on_change)
 
-        self.accumulator = QtWidgets.QSpinBox()
-        self.accumulator.setRange(5, 200)
-        self.accumulator.setValue(30)
-        self.accumulator.valueChanged.connect(self._on_change)
+        self.circularity = QtWidgets.QDoubleSpinBox()
+        self.circularity.setRange(0.50, 0.98)
+        self.circularity.setSingleStep(0.05)
+        self.circularity.setDecimals(2)
+        self.circularity.setValue(0.80)
+        self.circularity.valueChanged.connect(self._on_change)
 
         tgrid.addWidget(QtWidgets.QLabel("Expected wells:"), 0, 0)
-        tgrid.addWidget(self.expected, 0, 1)
-        tgrid.addWidget(QtWidgets.QLabel("Sensitivity threshold:"), 1, 0)
-        tgrid.addWidget(self.accumulator, 1, 1)
+        tgrid.addWidget(self.auto_count, 0, 1)
+        tgrid.addWidget(self.expected, 0, 2)
+        tgrid.addWidget(QtWidgets.QLabel("Circularity (strictness):"), 1, 0)
+        tgrid.addWidget(self.circularity, 1, 1, 1, 2)
         hint = QtWidgets.QLabel(
-            "Lower threshold finds more (and weaker) circles; raise it to reject "
-            "false detections. Set Expected wells to keep only the strongest N."
+            "Higher circularity accepts only rounder shapes and rejects false "
+            "detections from text, scratches, and noise; lower it if real wells "
+            "are missed. Set Expected wells to keep only the strongest N."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#8b96a0; font-size:11px;")
-        tgrid.addWidget(hint, 2, 0, 1, 2)
+        tgrid.addWidget(hint, 2, 0, 1, 3)
         root.addWidget(tune)
 
         # --- calibration ---
@@ -142,12 +150,14 @@ class DetectionTab(QtWidgets.QWidget):
     def apply(self):
         min_px = self._diameter_px(self.min_dia.value())
         max_px = self._diameter_px(self.max_dia.value())
-        expected = self.expected.value() or None
+        auto = self.auto_count.isChecked()
+        self.expected.setEnabled(not auto)
+        expected = None if auto else self.expected.value()
         self.main.set_detection(
             min_radius_px=int(max(1, min_px / 2)),
             max_radius_px=int(max(2, max_px / 2)),
             expected_count=expected,
-            accumulator_threshold=float(self.accumulator.value()),
+            circularity=float(self.circularity.value()),
         )
         self.main.set_calibration_params(
             mm_per_px=self.mm_per_px.value(),

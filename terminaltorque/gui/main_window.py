@@ -172,9 +172,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if frame is None:
             self.statusBar().showMessage("Failed to capture a frame")
             return None
+        # Freeze: stop live streaming so the captured frame (and any detection
+        # overlay drawn on it) stays on screen instead of being overwritten by
+        # the next live tick.
+        self.stop_live()
         self.captured_frame = frame
         self.live_tab.show_frame(frame)
-        self.statusBar().showMessage("Frame captured")
+        self.statusBar().showMessage("Frame captured - image frozen")
         return frame
 
     def process(self):
@@ -200,12 +204,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ----------------------------------------------------------- detection
     def set_detection(self, min_radius_px, max_radius_px, expected_count,
-                      accumulator_threshold):
+                      circularity=0.8):
         self.params = DetectionParams(
             min_radius_px=min_radius_px,
             max_radius_px=max_radius_px,
             expected_count=expected_count,
-            accumulator_threshold=accumulator_threshold,
+            circularity=circularity,
         )
 
     def set_calibration_params(self, mm_per_px: float, invert_y: bool):

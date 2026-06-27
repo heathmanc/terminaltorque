@@ -43,8 +43,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-radius", type=int, default=200, help="Max well radius (px).")
     p.add_argument("--min-dist", type=float, default=None,
                    help="Min distance between centers (px).")
+    p.add_argument("--circularity", type=float, default=0.8,
+                   help="Strictness of the default (alt) method, 0-1 "
+                        "(higher rejects more non-circular clutter).")
+    p.add_argument("--classic", action="store_true",
+                   help="Use the classic Hough transform instead of the "
+                        "circularity-scoring 'alt' method (uses --accumulator).")
     p.add_argument("--accumulator", type=float, default=30.0,
-                   help="Hough accumulator threshold (lower = more circles).")
+                   help="Classic-method accumulator threshold (lower = more "
+                        "circles). Only used with --classic.")
     p.add_argument("--expected", type=int, default=None,
                    help="Keep only the strongest N wells.")
 
@@ -137,6 +144,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         min_radius_px=args.min_radius,
         max_radius_px=args.max_radius,
         min_dist_px=args.min_dist,
+        use_gradient_alt=not args.classic,
+        circularity=args.circularity,
         accumulator_threshold=args.accumulator,
         expected_count=args.expected,
     )
