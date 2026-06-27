@@ -253,6 +253,33 @@ def test_measure_two_clicks_emits_distance(qapp):
     assert got and abs(got[0] - 100.0) < 1e-6
 
 
+def test_zoom_keeps_anchor_and_maps_correctly(qapp):
+    import numpy as np
+    from PySide6 import QtCore, QtGui
+    from terminaltorque.gui.widgets import ImageView
+
+    view = ImageView()
+    view.resize(640, 480)
+    view.set_frame(np.zeros((240, 320, 3), dtype=np.uint8))
+    anchor_widget = QtCore.QPointF(200, 150)
+    before = view._widget_to_image(anchor_widget.x(), anchor_widget.y())
+
+    wheel = QtGui.QWheelEvent(
+        anchor_widget, view.mapToGlobal(anchor_widget.toPoint()),
+        QtCore.QPoint(0, 0), QtCore.QPoint(0, 120),
+        QtCore.Qt.NoButton, QtCore.Qt.NoModifier,
+        QtCore.Qt.NoScrollPhase, False)
+    view.wheelEvent(wheel)
+
+    assert view._zoom > 1.0
+    after = view._widget_to_image(anchor_widget.x(), anchor_widget.y())
+    # The image point under the cursor is preserved across the zoom.
+    assert abs(after[0] - before[0]) < 0.5 and abs(after[1] - before[1]) < 0.5
+
+    view.reset_view()
+    assert view._zoom == 1.0
+
+
 def test_apply_measured_scale_sets_calibration(window):
     window.apply_measured_scale(distance_px=100.0, mm=12.0)
     assert window.detection_tab.mm_per_px.value() == pytest.approx(0.12)

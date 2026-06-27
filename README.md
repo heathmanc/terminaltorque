@@ -221,6 +221,13 @@ rim, a gauge, a ruler mark). Enter that real length in millimeters when prompted
 and the mm-per-pixel scale is set immediately — no detect-first round-trip. The
 measurement is taken on the frozen frame, so capture/aim first.
 
+For accurate placement, **scroll to zoom** and **right-drag to pan**; in measure
+mode the pointer becomes a full-view crosshair with a **magnifier loupe** (red
+reticle = the exact pixel that will be recorded). **Reset View** fits the image
+again.
+
+![measure with zoom + loupe](docs/hmi_measure_loupe.png)
+
 **Or from a known length on the command line:** measure the pixel size of a
 feature whose true size you know (e.g. a gauge or a terminal of known machined
 diameter) and save a reusable calibration:

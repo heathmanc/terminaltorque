@@ -39,15 +39,21 @@ class LiveViewTab(QtWidgets.QWidget):
 
         self.btn_measure = QtWidgets.QPushButton("Measure Scale")
         self.btn_measure.setToolTip(
-            "Click two points on a feature of known size to set mm-per-pixel."
+            "Click two points on a feature of known size to set mm-per-pixel. "
+            "Scroll to zoom, right-drag to pan; a loupe aids precise placement."
         )
         self.btn_measure.clicked.connect(self.main.begin_measure)
+
+        self.btn_reset_view = QtWidgets.QPushButton("Reset View")
+        self.btn_reset_view.setToolTip("Fit the image to the window (undo zoom/pan).")
+        self.btn_reset_view.clicked.connect(lambda: self.view.reset_view())
 
         self.btn_push = QtWidgets.QPushButton("Push to PLC")
         self.btn_push.clicked.connect(self.main.push_to_plc)
 
         for b in (self.btn_live, self.btn_capture, self.btn_process,
-                  self.btn_reprocess, self.btn_measure, self.btn_push):
+                  self.btn_reprocess, self.btn_measure, self.btn_reset_view,
+                  self.btn_push):
             controls.addWidget(b)
         controls.addStretch(1)
         left.addLayout(controls)

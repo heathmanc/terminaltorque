@@ -23,55 +23,102 @@ def bgr_to_qpixmap(frame: np.ndarray) -> QtGui.QPixmap:
 
 
 class ImageView(QtWidgets.QLabel):
-    """A QLabel that displays a frame scaled to fit, with a click-to-measure mode.
+    """Image display with zoom/pan and a precise click-to-measure mode.
 
-    In measure mode the next two clicks mark a segment on the *image* (mapped
-    from widget coordinates through the aspect-fit scaling); ``measurementReady``
-    fires with the segment length in image pixels once both points are set.
+    * Mouse wheel zooms (centred on the cursor); right-drag (or left-drag when
+      not measuring) pans. "Reset View" / :meth:`reset_view` fits the image.
+    * In measure mode a full-view crosshair replaces the cursor and a magnifier
+      loupe shows the pixels under it, so the two endpoints can be placed
+      accurately. ``measurementReady`` fires with the segment length in image
+      pixels once both points are clicked.
+
+    All overlay/measurement geometry is kept in image coordinates, so it stays
+    correct at any zoom or pan.
     """
 
-    # Emitted with the distance in image pixels once two points are clicked.
     measurementReady = QtCore.Signal(float)
+
+    _MIN_ZOOM = 1.0
+    _MAX_ZOOM = 25.0
+    _LOUPE_D = 150      # loupe diameter, widget px
+    _LOUPE_MAG = 4.0    # loupe magnification over the current scale
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(480, 360)
-        self.setAlignment(QtCore.Qt.AlignCenter)
         self.setObjectName("ImageView")
-        self.setText("No image")
+        self.setMouseTracking(True)
         self._pixmap: Optional[QtGui.QPixmap] = None
         self._measure_mode = False
-        self._points: list = []  # image-coordinate points
+        self._points: list = []           # image-coordinate points
+        self._zoom = 1.0
+        self._fit = True                  # auto-fit until the user zooms/pans
+        self._offset = QtCore.QPointF(0, 0)   # widget coords of image top-left
+        self._cursor_pos: Optional[QtCore.QPointF] = None
+        self._panning = False
+        self._pan_last: Optional[QtCore.QPointF] = None
 
+    # -- frame ---------------------------------------------------------------
     def set_frame(self, frame: Optional[np.ndarray]) -> None:
         if frame is None:
             self._pixmap = None
-            self.setText("No image")
+            self.update()
             return
         self._pixmap = bgr_to_qpixmap(frame)
-        self._rescale()
+        if self._fit:
+            self._zoom = 1.0
+        self._clamp()
+        self.update()
 
-    def resizeEvent(self, event):  # noqa: N802 (Qt naming)
-        self._rescale()
+    def resizeEvent(self, event):  # noqa: N802
+        self._clamp()
         super().resizeEvent(event)
 
-    def _rescale(self):
+    # -- view transform ------------------------------------------------------
+    def _base_scale(self) -> float:
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        return min(self.width() / pw, self.height() / ph)
+
+    def _scale(self) -> float:
+        return self._base_scale() * self._zoom
+
+    def _clamp(self):
         if self._pixmap is None:
             return
-        self.setPixmap(
-            self._pixmap.scaled(
-                self.size(),
-                QtCore.Qt.KeepAspectRatio,
-                QtCore.Qt.SmoothTransformation,
-            )
-        )
+        scale = self._scale()
+        iw, ih = self._pixmap.width() * scale, self._pixmap.height() * scale
+        w, h = self.width(), self.height()
+        ox, oy = self._offset.x(), self._offset.y()
+        ox = (w - iw) / 2 if iw <= w else min(0.0, max(w - iw, ox))
+        oy = (h - ih) / 2 if ih <= h else min(0.0, max(h - ih, oy))
+        self._offset = QtCore.QPointF(ox, oy)
+
+    def reset_view(self):
+        self._fit = True
+        self._zoom = 1.0
+        self._clamp()
         self.update()
+
+    def _widget_to_image(self, x: float, y: float):
+        if self._pixmap is None:
+            return None
+        scale = self._scale()
+        ix = (x - self._offset.x()) / scale
+        iy = (y - self._offset.y()) / scale
+        if 0 <= ix < self._pixmap.width() and 0 <= iy < self._pixmap.height():
+            return ix, iy
+        return None
+
+    def _image_to_widget(self, ix: float, iy: float):
+        scale = self._scale()
+        return QtCore.QPointF(self._offset.x() + ix * scale,
+                              self._offset.y() + iy * scale)
 
     # -- measure mode --------------------------------------------------------
     def start_measure(self):
         self._measure_mode = True
         self._points = []
-        self.setCursor(QtCore.Qt.CrossCursor)
+        self.setCursor(QtCore.Qt.BlankCursor)   # crosshair replaces the pointer
         self.update()
 
     def clear_measure(self):
@@ -80,36 +127,26 @@ class ImageView(QtWidgets.QLabel):
         self.unsetCursor()
         self.update()
 
-    def _displayed_rect(self):
-        """(offset_x, offset_y, scale) of the image within the widget, or None."""
+    # -- input ---------------------------------------------------------------
+    def wheelEvent(self, event):  # noqa: N802
         if self._pixmap is None:
-            return None
-        pw, ph = self._pixmap.width(), self._pixmap.height()
-        if pw == 0 or ph == 0:
-            return None
-        scale = min(self.width() / pw, self.height() / ph)
-        ox = (self.width() - pw * scale) / 2.0
-        oy = (self.height() - ph * scale) / 2.0
-        return ox, oy, scale
-
-    def _widget_to_image(self, x: float, y: float):
-        r = self._displayed_rect()
-        if r is None:
-            return None
-        ox, oy, scale = r
-        ix, iy = (x - ox) / scale, (y - oy) / scale
-        if 0 <= ix < self._pixmap.width() and 0 <= iy < self._pixmap.height():
-            return ix, iy
-        return None
-
-    def _image_to_widget(self, ix: float, iy: float):
-        ox, oy, scale = self._displayed_rect()
-        return QtCore.QPointF(ox + ix * scale, oy + iy * scale)
+            return
+        c = event.position()
+        anchor = self._widget_to_image(c.x(), c.y()) or (
+            self._pixmap.width() / 2, self._pixmap.height() / 2)
+        step = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
+        self._zoom = max(self._MIN_ZOOM, min(self._MAX_ZOOM, self._zoom * step))
+        self._fit = self._zoom <= self._MIN_ZOOM
+        scale = self._scale()
+        # Keep the anchored image point under the cursor.
+        self._offset = QtCore.QPointF(c.x() - anchor[0] * scale,
+                                      c.y() - anchor[1] * scale)
+        self._clamp()
+        self.update()
 
     def mousePressEvent(self, event):  # noqa: N802
         if self._measure_mode and event.button() == QtCore.Qt.LeftButton:
-            pos = event.position()
-            p = self._widget_to_image(pos.x(), pos.y())
+            p = self._widget_to_image(event.position().x(), event.position().y())
             if p is not None:
                 self._points.append(p)
                 if len(self._points) == 2:
@@ -122,26 +159,122 @@ class ImageView(QtWidgets.QLabel):
                 else:
                     self.update()
             return
-        super().mousePressEvent(event)
+        # Otherwise begin panning (right button always; left when not measuring).
+        if event.button() in (QtCore.Qt.RightButton, QtCore.Qt.MiddleButton) or (
+            event.button() == QtCore.Qt.LeftButton and not self._measure_mode
+        ):
+            self._panning = True
+            self._pan_last = event.position()
+            self._fit = False
 
+    def mouseMoveEvent(self, event):  # noqa: N802
+        self._cursor_pos = event.position()
+        if self._panning and self._pan_last is not None:
+            self._offset += event.position() - self._pan_last
+            self._pan_last = event.position()
+            self._clamp()
+        self.update()
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        self._panning = False
+        self._pan_last = None
+
+    def leaveEvent(self, event):  # noqa: N802
+        self._cursor_pos = None
+        self.update()
+
+    # -- painting ------------------------------------------------------------
     def paintEvent(self, event):  # noqa: N802
-        super().paintEvent(event)  # draws the scaled pixmap (and stylesheet)
-        if self._pixmap is None or not self._points:
-            return
         painter = QtGui.QPainter(self)
+        opt = QtWidgets.QStyleOption()
+        opt.initFrom(self)
+        self.style().drawPrimitive(QtWidgets.QStyle.PE_Widget, opt, painter, self)
+
+        if self._pixmap is None:
+            painter.setPen(QtGui.QColor("#5a636d"))
+            painter.drawText(self.rect(), QtCore.Qt.AlignCenter, "No image")
+            painter.end()
+            return
+
+        painter.setClipRect(self.rect())
+        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
+        scale = self._scale()
+        dst = QtCore.QRectF(self._offset.x(), self._offset.y(),
+                            self._pixmap.width() * scale,
+                            self._pixmap.height() * scale)
+        painter.drawPixmap(dst, self._pixmap, QtCore.QRectF(self._pixmap.rect()))
+
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        self._draw_measurement(painter)
+        if self._measure_mode and self._cursor_pos is not None:
+            self._draw_crosshair(painter, self._cursor_pos)
+            self._draw_loupe(painter, self._cursor_pos)
+            self._draw_hint(painter)
+        if self._zoom > 1.0:
+            painter.setPen(QtGui.QColor("#8b96a0"))
+            painter.drawText(QtCore.QPointF(8, self.height() - 8),
+                             f"{self._zoom:.1f}x")
+        painter.end()
+
+    def _draw_measurement(self, painter):
+        if not self._points:
+            return
         pen = QtGui.QPen(QtGui.QColor("#ffd166"), 2)
         painter.setPen(pen)
-        widget_pts = [self._image_to_widget(ix, iy) for ix, iy in self._points]
-        for wp in widget_pts:
+        pts = [self._image_to_widget(ix, iy) for ix, iy in self._points]
+        for wp in pts:
             painter.drawEllipse(wp, 4, 4)
-        if len(widget_pts) == 2:
-            painter.drawLine(widget_pts[0], widget_pts[1])
+        if len(pts) == 1 and self._cursor_pos is not None:
+            painter.drawLine(pts[0], self._cursor_pos)   # rubber band
+        if len(pts) == 2:
+            painter.drawLine(pts[0], pts[1])
             (x0, y0), (x1, y1) = self._points
-            dist = np.hypot(x1 - x0, y1 - y0)
-            mid = (widget_pts[0] + widget_pts[1]) / 2.0
-            painter.drawText(mid + QtCore.QPointF(6, -6), f"{dist:.1f} px")
-        painter.end()
+            mid = (pts[0] + pts[1]) / 2.0
+            painter.drawText(mid + QtCore.QPointF(6, -6),
+                             f"{np.hypot(x1 - x0, y1 - y0):.1f} px")
+
+    def _draw_crosshair(self, painter, c):
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 209, 102, 200), 1))
+        painter.drawLine(QtCore.QPointF(c.x(), 0), QtCore.QPointF(c.x(), self.height()))
+        painter.drawLine(QtCore.QPointF(0, c.y()), QtCore.QPointF(self.width(), c.y()))
+
+    def _draw_loupe(self, painter, c):
+        ip = self._widget_to_image(c.x(), c.y())
+        if ip is None:
+            return
+        d = self._LOUPE_D
+        # Place the loupe near the cursor, flipping away from the edges.
+        lx = c.x() + 24 if c.x() + 24 + d < self.width() else c.x() - 24 - d
+        ly = c.y() - 24 - d if c.y() - 24 - d > 0 else c.y() + 24
+        rect = QtCore.QRectF(lx, ly, d, d)
+        center = rect.center()
+        path = QtGui.QPainterPath()
+        path.addEllipse(rect)
+
+        painter.save()
+        painter.setClipPath(path)
+        painter.fillRect(rect, QtGui.QColor("#0c0f12"))
+        total = self._scale() * self._LOUPE_MAG
+        half = (d / 2) / total
+        src = QtCore.QRectF(ip[0] - half, ip[1] - half, 2 * half, 2 * half)
+        painter.drawPixmap(rect, self._pixmap, src)
+        painter.restore()
+
+        painter.setPen(QtGui.QPen(QtGui.QColor("#ffd166"), 2))
+        painter.drawEllipse(rect)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#ff3b3b"), 1))
+        painter.drawLine(QtCore.QPointF(center.x() - 10, center.y()),
+                         QtCore.QPointF(center.x() + 10, center.y()))
+        painter.drawLine(QtCore.QPointF(center.x(), center.y() - 10),
+                         QtCore.QPointF(center.x(), center.y() + 10))
+
+    def _draw_hint(self, painter):
+        painter.setPen(QtGui.QColor("#c9d2da"))
+        n = len(self._points)
+        msg = ("Measure: click point 1  •  scroll = zoom  •  right-drag = pan"
+               if n == 0 else
+               "Measure: click point 2  •  scroll = zoom  •  right-drag = pan")
+        painter.drawText(QtCore.QPointF(10, 18), msg)
 
 
 class StatusLED(QtWidgets.QWidget):
