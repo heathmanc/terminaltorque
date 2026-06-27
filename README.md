@@ -20,11 +20,44 @@ a robot can position over each terminal and torque the nut.
 4. **Calibration** maps pixel centers and diameters to millimeters in the
    robot's work plane.
 
+## Industrial HMI
+
+A PySide6/Qt operator HMI wraps the whole pipeline. Launch it with:
+
+```bash
+pip install -e ".[hmi]"        # adds PySide6
+terminaltorque-hmi             # or: python -m terminaltorque.gui
+```
+
+![HMI live view](docs/hmi_live.png)
+
+Four tabs:
+
+- **Live View** — stream the camera, **Capture** a frame, **Capture & Process**
+  to detect wells (centers + diameters overlaid, results in a table), and
+  **Push to PLC**.
+- **Camera** — pick the source (a real device index or the built-in synthetic
+  demo lid) and adjust **exposure, brightness, contrast, saturation, hue, gain,
+  and auto-exposure** live.
+- **Detection** — tell it **what hole size to look for** (min/max diameter in
+  pixels or millimeters), the expected well count, and detection sensitivity,
+  plus calibration (mm/px, or set it from a known length).
+- **PLC** — enable/disable the push, set the connection, and see every PLC tag
+  with its **type and description** and a per-tag write checkbox.
+
+With no camera attached, choose *"Use synthetic demo lid"* on the Camera tab to
+exercise the full station — capture, detect, calibrate, and push — entirely in
+software.
+
+|  Camera tab | Detection tab | PLC tab |
+|---|---|---|
+| ![camera](docs/hmi_camera.png) | ![detection](docs/hmi_detection.png) | ![plc](docs/hmi_plc.png) |
+
 ## Install
 
 ```bash
 pip install -r requirements.txt        # runtime (numpy + opencv)
-pip install -e ".[dev]"                # editable install + pytest
+pip install -e ".[dev]"                # editable install + pytest + PLC + HMI
 ```
 
 ## Quick start
@@ -213,6 +246,7 @@ count, center accuracy, diameter accuracy, and calibration math.
 | `terminaltorque/detector.py` | Hough detection + sub-pixel refinement |
 | `terminaltorque/calibration.py` | Pixel ↔ millimeter mapping |
 | `terminaltorque/plc.py` | Push results to an Allen-Bradley Logix PLC |
+| `terminaltorque/gui/` | PySide6 industrial HMI (Live / Camera / Detection / PLC) |
 | `terminaltorque/io_utils.py` | Load image / grab camera frame |
 | `terminaltorque/synthetic.py` | Synthetic lid generator for demos & tests |
 | `terminaltorque/cli.py` | Command-line interface |

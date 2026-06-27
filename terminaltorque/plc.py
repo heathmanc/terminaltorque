@@ -83,14 +83,59 @@ def _well_values(well: TerminalWell) -> Tuple[float, float, float]:
     return float(x), float(y), float(dia)
 
 
+# Human-readable descriptions for the HMI PLC tab, keyed by logical group.
+TAG_DESCRIPTIONS: dict = {
+    "count": "Number of valid wells found this cycle.",
+    "x": "Well center X (mm if calibrated, else pixels).",
+    "y": "Well center Y (mm if calibrated, else pixels).",
+    "dia": "Well diameter (mm if calibrated, else pixels).",
+    "valid": "True for populated array slots; false for unused slots.",
+    "data_ready": "Set after a complete write. Robot gates on this; clear it "
+                  "to acknowledge the data was consumed.",
+}
+
+# Logical groups that can be individually enabled/disabled from the HMI.
+ALL_GROUPS = ("count", "x", "y", "dia", "valid", "data_ready")
+
+
+def tag_catalog(config: PlcConfig) -> List[dict]:
+    """Describe the tags this config writes, for display in the HMI.
+
+    Returns one entry per logical group: ``{group, tag, type, description}``.
+    Array tags use ``[0..N-1]`` notation.
+    """
+    last = config.max_wells - 1
+    rows = [
+        {"group": "count", "tag": config.count_tag, "type": "DINT"},
+        {"group": "x", "tag": config.x_tag.format(i=f"0..{last}"), "type": "REAL[]"},
+        {"group": "y", "tag": config.y_tag.format(i=f"0..{last}"), "type": "REAL[]"},
+        {"group": "dia", "tag": config.dia_tag.format(i=f"0..{last}"), "type": "REAL[]"},
+    ]
+    if config.valid_tag:
+        rows.append({"group": "valid",
+                     "tag": config.valid_tag.format(i=f"0..{last}"), "type": "BOOL[]"})
+    if config.data_ready_tag:
+        rows.append({"group": "data_ready", "tag": config.data_ready_tag, "type": "BOOL"})
+    for r in rows:
+        r["description"] = TAG_DESCRIPTIONS.get(r["group"], "")
+    return rows
+
+
 def build_writes(
-    wells: Sequence[TerminalWell], config: PlcConfig
+    wells: Sequence[TerminalWell],
+    config: PlcConfig,
+    enabled_groups: Optional[Sequence[str]] = None,
 ) -> List[Tuple[str, object]]:
     """Return the ordered ``(tag, value)`` writes for one push, sans handshake.
 
     Every array slot up to ``max_wells`` is included so stale slots are cleared.
     Wells beyond ``max_wells`` are dropped (already sorted strongest-first).
+    ``enabled_groups`` optionally restricts which logical groups are written
+    (used by the HMI to disable individual tags); ``None`` writes all.
     """
+    def on(group: str) -> bool:
+        return enabled_groups is None or group in enabled_groups
+
     n = min(len(wells), config.max_wells)
     writes: List[Tuple[str, object]] = []
     for i in range(config.max_wells):
@@ -100,12 +145,16 @@ def build_writes(
         else:
             x = y = dia = 0.0
             valid = False
-        writes.append((config.x_tag.format(i=i), x))
-        writes.append((config.y_tag.format(i=i), y))
-        writes.append((config.dia_tag.format(i=i), dia))
-        if config.valid_tag:
+        if on("x"):
+            writes.append((config.x_tag.format(i=i), x))
+        if on("y"):
+            writes.append((config.y_tag.format(i=i), y))
+        if on("dia"):
+            writes.append((config.dia_tag.format(i=i), dia))
+        if config.valid_tag and on("valid"):
             writes.append((config.valid_tag.format(i=i), valid))
-    writes.append((config.count_tag, int(n)))
+    if on("count"):
+        writes.append((config.count_tag, int(n)))
     return writes
 
 
@@ -116,6 +165,7 @@ def push_to_plc(
     wait_for_ack: bool = False,
     ack_timeout_s: float = 5.0,
     poll_interval_s: float = 0.05,
+    enabled_groups: Optional[Sequence[str]] = None,
 ) -> dict:
     """Write detection results to the PLC and raise the data-ready handshake.
 
@@ -141,7 +191,7 @@ def push_to_plc(
         if config.data_ready_tag:
             plc.write((config.data_ready_tag, False))
 
-        writes = build_writes(wells, config)
+        writes = build_writes(wells, config, enabled_groups)
         plc.write(*writes)
 
         handshake_set = False
