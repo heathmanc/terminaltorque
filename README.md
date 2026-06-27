@@ -40,12 +40,15 @@ terminaltorque-hmi             # or: python -m terminaltorque.gui
 
 Four tabs:
 
-- **Live View** — stream the camera, **Capture** a frame, **Capture & Process**
-  to detect wells (centers + diameters overlaid, results in a table), and
-  **Push to PLC**.
+- **Live View** — **Start Live** connects the camera (per the Camera tab's
+  source) and streams it; **Capture** a frame, **Capture & Process** to detect
+  wells (centers + diameters overlaid, results in a table), and **Push to PLC**.
 - **Camera** — pick the source (a real device index or the built-in synthetic
-  demo lid) and adjust **exposure, brightness, contrast, saturation, hue, gain,
-  and auto-exposure** live.
+  demo lid), **Detect supported modes** to list resolutions / frame rates and
+  apply one, and adjust **exposure, brightness, contrast, saturation, hue, gain,
+  and auto-exposure** live. Auto-exposure is on by default and the camera keeps
+  its own settings on connect — controls only change the camera when you move
+  them, so the picture is never darkened behind your back.
 - **Detection** — tell it **what hole size to look for** (min/max diameter in
   pixels or millimeters), the expected well count, and detection sensitivity,
   plus calibration (mm/px, or set it from a known length).

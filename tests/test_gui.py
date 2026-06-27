@@ -51,6 +51,32 @@ def test_connect_synthetic_and_capture_process(window):
     assert window.live_tab.table.rowCount() == 2
 
 
+def test_start_live_auto_connects(window):
+    # No explicit connect; Camera tab defaults to the synthetic source.
+    assert window.camera is None
+    window.start_live()
+    assert window.camera is not None and window.camera.is_open()
+    assert window.live_timer.isActive()
+
+
+def test_connect_only_pushes_auto_exposure(window):
+    # The connect step must not force a manual (dark) exposure on the camera.
+    window.connect_synthetic_camera()
+    assert window.camera.get_property("auto_exposure") == 1.0
+    # Exposure stays at its default; connect did not drive it.
+    from terminaltorque.gui.camera_source import PROPERTY_BY_KEY
+    assert window.camera.get_property("exposure") == PROPERTY_BY_KEY["exposure"].default
+
+
+def test_probe_and_apply_camera_mode(window):
+    window.connect_synthetic_camera()
+    modes = window.probe_camera_modes()
+    assert (1280, 720, 30.0) in modes
+    window.apply_camera_mode(1280, 720, 30.0)
+    frame = window.camera.read()
+    assert frame.shape[1] == 1280 and frame.shape[0] == 720
+
+
 def test_camera_property_changes_live_image(window):
     window.connect_synthetic_camera()
     f1 = window.camera.read().copy()

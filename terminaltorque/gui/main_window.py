@@ -108,7 +108,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.led_plc.set_state("off", "PLC: disabled")
         else:
             self.led_plc.set_state("warn", f"PLC: {self.plc_config.path}")
-        self.live_tab.set_controls_enabled(cam_ok)
+        # Live-view buttons stay enabled - Start Live / Capture auto-connect.
+        self.live_tab.set_controls_enabled(True)
         self.camera_tab.on_camera_connected(cam_ok)
 
     # -------------------------------------------------------------- camera
@@ -118,6 +119,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def connect_camera(self, index: int):
         self._set_camera(OpenCVCameraSource(index))
 
+    def ensure_camera(self) -> bool:
+        """Connect using the Camera tab's current source selection if needed."""
+        if self.camera is not None and self.camera.is_open():
+            return True
+        if self.camera_tab.use_synthetic_source():
+            self.connect_synthetic_camera()
+        else:
+            self.connect_camera(self.camera_tab.device_index())
+        return self.camera is not None and self.camera.is_open()
+
     def _set_camera(self, source: CameraSource):
         self.disconnect_camera()
         if not source.open():
@@ -126,12 +137,30 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
         self.camera = source
+        # Push ONLY the auto-exposure state (keeps the image bright); never
+        # force manual exposure/gain on connect.
+        self.camera_tab.apply_initial_settings()
         frame = self.camera.read()
         if frame is not None:
             self.live_frame = frame
             self.live_tab.show_frame(frame)
         self.statusBar().showMessage(f"Connected to {source.name}")
         self._refresh_status()
+
+    def probe_camera_modes(self):
+        if not self.ensure_camera():
+            return []
+        return self.camera.probe_modes()
+
+    def apply_camera_mode(self, width, height, fps=None):
+        if self.camera is None:
+            return
+        self.camera.set_mode(width, height, fps)
+        frame = self.camera.read()
+        if frame is not None:
+            self.live_frame = frame
+            self.live_tab.show_frame(frame)
+        self.statusBar().showMessage(f"Resolution set to {width} x {height}")
 
     def disconnect_camera(self):
         self.stop_live()
@@ -145,8 +174,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.camera.set_property(key, value)
 
     def start_live(self):
-        if self.camera is not None and self.camera.is_open():
-            self.live_timer.start()
+        # Start Live does the whole thing: connect (per the Camera tab's source)
+        # then stream.
+        if not self.ensure_camera():
+            self.stop_live()
+            self.statusBar().showMessage("Could not start a camera")
+            return
+        self.live_timer.start()
 
     def stop_live(self):
         self.live_timer.stop()
@@ -163,7 +197,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ------------------------------------------------------------- capture
     def capture(self):
-        if self.camera is None or not self.camera.is_open():
+        if not self.ensure_camera():
             self.statusBar().showMessage("No camera connected")
             return None
         frame = self.camera.read()

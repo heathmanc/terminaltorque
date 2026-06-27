@@ -40,7 +40,7 @@ class CameraProperty:
 # Order here is the order shown in the Camera tab.
 CAMERA_PROPERTIES: List[CameraProperty] = [
     CameraProperty("auto_exposure", "Auto Exposure", cv2.CAP_PROP_AUTO_EXPOSURE,
-                   0, 1, 0, 1, is_toggle=True),
+                   0, 1, 1, 1, is_toggle=True),
     CameraProperty("exposure", "Exposure (EV)", cv2.CAP_PROP_EXPOSURE,
                    -13, 0, -6, 1),
     CameraProperty("brightness", "Brightness", cv2.CAP_PROP_BRIGHTNESS,
@@ -56,6 +56,12 @@ CAMERA_PROPERTIES: List[CameraProperty] = [
 ]
 
 PROPERTY_BY_KEY: Dict[str, CameraProperty] = {p.key: p for p in CAMERA_PROPERTIES}
+
+# Common sensor resolutions probed when listing camera modes.
+STANDARD_RESOLUTIONS = [
+    (320, 240), (640, 480), (800, 600), (1024, 768), (1280, 720),
+    (1280, 960), (1600, 1200), (1920, 1080), (2560, 1440), (3840, 2160),
+]
 
 
 class CameraSource:
@@ -80,6 +86,14 @@ class CameraSource:
 
     def get_property(self, key: str) -> Optional[float]:  # pragma: no cover
         raise NotImplementedError
+
+    def probe_modes(self) -> List[tuple]:  # pragma: no cover - trivial
+        """Return supported (width, height, fps) modes."""
+        return []
+
+    def set_mode(self, width: int, height: int, fps: Optional[float] = None) -> None:
+        """Select a capture resolution / frame rate."""
+        pass
 
 
 class OpenCVCameraSource(CameraSource):
@@ -124,6 +138,39 @@ class OpenCVCameraSource(CameraSource):
             return None
         return self._cap.get(prop.cv_prop)
 
+    def probe_modes(self) -> List[tuple]:
+        """Probe which standard resolutions the camera actually accepts.
+
+        OpenCV has no enumeration API, so we set each candidate and read back
+        what the driver snapped to, deduplicating. The current mode is restored
+        afterwards.
+        """
+        if not self.is_open():
+            return []
+        cur_w = self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        cur_h = self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        modes, seen = [], set()
+        for w, h in STANDARD_RESOLUTIONS:
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            aw = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            ah = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = round(float(self._cap.get(cv2.CAP_PROP_FPS)), 1)
+            if aw and ah and (aw, ah) not in seen:
+                seen.add((aw, ah))
+                modes.append((aw, ah, fps))
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, cur_w)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cur_h)
+        return modes
+
+    def set_mode(self, width: int, height: int, fps: Optional[float] = None) -> None:
+        if not self.is_open():
+            return
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if fps:
+            self._cap.set(cv2.CAP_PROP_FPS, fps)
+
 
 class SyntheticCameraSource(CameraSource):
     """Software camera that renders the demo lid and applies adjustments.
@@ -156,6 +203,12 @@ class SyntheticCameraSource(CameraSource):
 
     def get_property(self, key: str) -> Optional[float]:
         return self._props.get(key)
+
+    def probe_modes(self) -> List[tuple]:
+        return [(640, 480, 30.0), (1280, 720, 30.0), (1920, 1080, 30.0)]
+
+    def set_mode(self, width: int, height: int, fps: Optional[float] = None) -> None:
+        self._size = (int(height), int(width))
 
     def read(self) -> Optional[np.ndarray]:
         if not self._open:
