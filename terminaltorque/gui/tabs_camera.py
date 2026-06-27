@@ -38,9 +38,11 @@ class CameraTab(QtWidgets.QWidget):
         # --- source selection ---
         src = QtWidgets.QGroupBox("Camera Source")
         form = QtWidgets.QGridLayout(src)
-        self.use_synthetic = QtWidgets.QCheckBox("Use synthetic demo lid (no hardware)")
-        self.use_synthetic.setChecked(True)
-        self.use_synthetic.toggled.connect(self._sync_source_widgets)
+        self.source = QtWidgets.QComboBox()
+        self.source.addItem("Synthetic demo lid (no hardware)", "synthetic")
+        self.source.addItem("USB / V4L2 camera", "v4l2")
+        self.source.addItem("Basler (pypylon)", "basler")
+        self.source.currentIndexChanged.connect(self._sync_source_widgets)
 
         self.index_spin = QtWidgets.QSpinBox()
         self.index_spin.setRange(0, 16)
@@ -48,19 +50,21 @@ class CameraTab(QtWidgets.QWidget):
         self.backend = QtWidgets.QComboBox()
         self.backend.addItem("GStreamer (recommended)", "gstreamer")
         self.backend.addItem("V4L2", "v4l2")
+        self.backend_label = QtWidgets.QLabel("Capture backend:")
 
         hint = QtWidgets.QLabel(
             "Pick the source, then Detect to load this camera's real "
-            "resolutions and controls (no live view needed). Start Live or "
-            "Capture on the Live View connects automatically."
+            "resolutions and controls. Start Live or Capture on the Live View "
+            "connects automatically."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#8b96a0; font-size:11px;")
 
-        form.addWidget(self.use_synthetic, 0, 0, 1, 2)
+        form.addWidget(QtWidgets.QLabel("Source:"), 0, 0)
+        form.addWidget(self.source, 0, 1)
         form.addWidget(QtWidgets.QLabel("Device index:"), 1, 0)
         form.addWidget(self.index_spin, 1, 1)
-        form.addWidget(QtWidgets.QLabel("Capture backend:"), 2, 0)
+        form.addWidget(self.backend_label, 2, 0)
         form.addWidget(self.backend, 2, 1)
         form.addWidget(hint, 3, 0, 1, 2)
         root.addWidget(src)
@@ -86,17 +90,29 @@ class CameraTab(QtWidgets.QWidget):
         root.addWidget(self.adjust_box)
         root.addStretch(1)
 
-        self._sync_source_widgets()
-        self._build_nominal_adjustments()   # synthetic by default
+        self._sync_source_widgets()   # also builds the matching adjustments
 
     # -- source --------------------------------------------------------------
     def _sync_source_widgets(self):
-        real = not self.use_synthetic.isChecked()
+        st = self.source_type()
+        real = st != "synthetic"
         self.index_spin.setEnabled(real)
-        self.backend.setEnabled(real)
+        # The capture-backend choice only applies to V4L2 cameras.
+        is_v4l2 = st == "v4l2"
+        self.backend.setVisible(is_v4l2)
+        self.backend_label.setVisible(is_v4l2)
+        # Reset the adjustments to match: synthetic shows fixed sliders; a real
+        # camera waits for Detect to load its actual controls.
+        if st == "synthetic":
+            self._rebuild_adjustments(None)
+        else:
+            self._show_detect_prompt()
+
+    def source_type(self) -> str:
+        return self.source.currentData()
 
     def use_synthetic_source(self) -> bool:
-        return self.use_synthetic.isChecked()
+        return self.source_type() == "synthetic"
 
     def device_index(self) -> int:
         return self.index_spin.value()
@@ -119,6 +135,10 @@ class CameraTab(QtWidgets.QWidget):
         """
         if self._auto_exposure_cb is not None:
             self.main.set_camera_auto_exposure(self._auto_exposure_cb.isChecked())
+        elif not self.use_synthetic_source():
+            # Real camera connected before Detect: default to auto-exposure so
+            # the image is usable out of the gate.
+            self.main.set_camera_auto_exposure(True)
 
     # -- modes ---------------------------------------------------------------
     def _detect(self):
@@ -152,6 +172,17 @@ class CameraTab(QtWidgets.QWidget):
             self._build_no_controls_notice()
         else:
             self._build_dynamic_adjustments(controls)
+
+    def _show_detect_prompt(self):
+        _clear_layout(self.adjust_layout)
+        self._auto_exposure_cb = None
+        self._exposure_widget = None
+        msg = QtWidgets.QLabel(
+            'Press "Detect modes & controls" to load this camera\'s '
+            "resolutions and image controls.")
+        msg.setWordWrap(True)
+        msg.setStyleSheet("color:#8b96a0;")
+        self.adjust_layout.addWidget(msg)
 
     def _build_no_controls_notice(self):
         msg = QtWidgets.QLabel(

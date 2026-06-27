@@ -16,7 +16,8 @@ dependencies = [
 [project.optional-dependencies]
 plc = ["pycomm3>=1.2"]
 hmi = ["PySide6>=6.6"]
-dev = ["pytest>=7.0", "pycomm3>=1.2", "PySide6>=6.6"]
+basler = ["pypylon>=3.0"]
+dev = ["pytest>=7.0", "pycomm3>=1.2", "PySide6>=6.6", "pypylon>=3.0"]
 
 [project.scripts]
 terminaltorque = "terminaltorque.cli:main"

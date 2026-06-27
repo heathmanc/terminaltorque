@@ -4,3 +4,5 @@ opencv-python-headless>=4.8
 pycomm3>=1.2
 # Industrial HMI GUI. Optional: only needed for `terminaltorque-hmi`.
 PySide6>=6.6
+# Basler camera support. Optional: only needed for the Basler (pypylon) source.
+pypylon>=3.0

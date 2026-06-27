@@ -112,7 +112,7 @@ def test_camera_tab_builds_dynamic_controls_from_v4l2(window):
 def test_real_auto_exposure_drives_v4l2_menu(window, monkeypatch):
     """The dark-image fix: connect/auto routes to the V4L2 auto_exposure menu."""
     from terminaltorque.gui import v4l2 as v
-    window.camera_tab.use_synthetic.setChecked(False)
+    window.camera_tab.source.setCurrentIndex(window.camera_tab.source.findData("v4l2"))
     calls = []
     monkeypatch.setattr(v, "available", lambda: True)
     monkeypatch.setattr(v, "set_auto_exposure",
@@ -123,7 +123,7 @@ def test_real_auto_exposure_drives_v4l2_menu(window, monkeypatch):
 
 def test_query_modes_real_uses_v4l2(window, monkeypatch):
     from terminaltorque.gui import v4l2 as v
-    window.camera_tab.use_synthetic.setChecked(False)
+    window.camera_tab.source.setCurrentIndex(window.camera_tab.source.findData("v4l2"))
     monkeypatch.setattr(v, "available", lambda: True)
     monkeypatch.setattr(v, "list_modes",
                         lambda dev: [v.V4l2Mode(1920, 1080, 30.0, "MJPG")])

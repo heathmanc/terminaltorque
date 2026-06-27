@@ -44,13 +44,14 @@ Four tabs:
   source) and streams it; **Capture** a frame, **Capture & Process** to detect
   wells (centers + diameters overlaid, results in a table), **Measure Scale** to
   click-to-calibrate mm-per-pixel on the frozen frame, and **Push to PLC**.
-- **Camera** — pick the source (a real device index or the built-in synthetic
-  demo lid) and choose a capture backend. **Detect modes & controls** reads the
-  camera's *real* supported resolutions/frame rates and its *real* image
-  controls (true ranges) straight from the device — no live view required. For
-  a V4L2 camera the adjustment sliders are built from the hardware itself, so
-  exposure is driven through the correct `auto_exposure` menu instead of
-  OpenCV's broken normalized property (the usual cause of a black image).
+- **Camera** — pick the **Source** (synthetic demo lid, USB/V4L2 camera, or
+  **Basler via pypylon**) and, for V4L2, a capture backend. **Detect modes &
+  controls** reads the camera's *real* supported resolutions/frame rates and its
+  *real* image controls (true ranges) straight from the device. For a V4L2
+  camera the sliders are built from the hardware, so exposure is driven through
+  the correct `auto_exposure` menu instead of OpenCV's broken normalized
+  property (the usual cause of a black image); Basler cameras expose their
+  `ExposureTime`/`Gain`/`ExposureAuto` controls the same way.
 
 ### Linux camera setup
 
@@ -60,7 +61,23 @@ Real cameras use a V4L2 backend that reads modes and controls via `v4l2-ctl`:
 sudo apt install v4l-utils      # required for real resolutions + image controls
 ```
 
-Capture backend (Camera tab → *Capture backend*):
+### Basler cameras (pypylon)
+
+Basler GigE/USB3 cameras are driven through the Pylon SDK, not V4L2. Install
+the wrapper and select **Basler (pypylon)** as the Source on the Camera tab:
+
+```bash
+pip install "pypylon>=3.0"      # or: pip install -e ".[basler]"
+```
+
+Set the **Device index** (0 for the first camera) and press **Detect modes &
+controls** to connect and load the sensor's resolutions and its real exposure /
+gain / auto-exposure controls. Frames are converted to BGR automatically;
+auto-exposure maps to the camera's `ExposureAuto` mode, and manual exposure to
+`ExposureTime`. Everything downstream (detection, calibration, PLC push) is
+identical to the other sources.
+
+Capture backend (Camera tab → *Capture backend*, V4L2 sources only):
 
 - **GStreamer (recommended)** — needs an OpenCV built with GStreamer (e.g. the
   distro package `python3-opencv`, or a custom build). The pip

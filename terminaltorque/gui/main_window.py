@@ -16,6 +16,7 @@ from .camera_source import (
     SyntheticCameraSource,
     V4l2CameraSource,
 )
+from .pylon_source import PylonCameraSource
 from . import v4l2
 from .style import DARK_INDUSTRIAL_QSS
 from .widgets import StatusLED
@@ -132,18 +133,24 @@ class MainWindow(QtWidgets.QMainWindow):
         w = h = fps = None
         if mode:
             w, h, fps = mode
-        self._set_camera(V4l2CameraSource(
-            index, backend=self.camera_tab.capture_backend(),
-            width=w, height=h, fps=fps,
-        ))
+        if self.camera_tab.source_type() == "basler":
+            self._set_camera(PylonCameraSource(index, width=w, height=h, fps=fps))
+        else:
+            self._set_camera(V4l2CameraSource(
+                index, backend=self.camera_tab.capture_backend(),
+                width=w, height=h, fps=fps,
+            ))
 
-    # -- camera control routing (synthetic source vs real v4l2 device) -----
+    # -- camera control routing (synthetic / V4L2 device / Basler) ---------
     def selected_device(self) -> str:
         return f"/dev/video{self.camera_tab.device_index()}"
 
     def query_modes(self):
-        if self.camera_tab.use_synthetic_source():
+        st = self.camera_tab.source_type()
+        if st == "synthetic":
             return SyntheticCameraSource().probe_modes()
+        if st == "basler":
+            return self.camera.probe_modes() if self.ensure_camera() else []
         if v4l2.available():
             return [(m.width, m.height, m.fps)
                     for m in v4l2.list_modes(self.selected_device())]
@@ -151,25 +158,30 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def query_controls(self):
         # None -> synthetic (use nominal sliders); dict -> real controls.
-        if self.camera_tab.use_synthetic_source():
+        st = self.camera_tab.source_type()
+        if st == "synthetic":
             return None
+        if st == "basler":
+            return self.camera.controls() if self.ensure_camera() else {}
         if v4l2.available():
             return v4l2.list_controls(self.selected_device())
         return {}
 
     def set_camera_control(self, key, value):
-        if self.camera_tab.use_synthetic_source():
-            if self.camera is not None:
-                self.camera.set_property(key, value)
-        elif v4l2.available():
-            v4l2.set_control(self.selected_device(), key, int(value))
+        st = self.camera_tab.source_type()
+        if st == "v4l2":
+            if v4l2.available():
+                v4l2.set_control(self.selected_device(), key, int(value))
+        elif self.camera is not None:        # synthetic or basler source object
+            self.camera.set_property(key, value)
 
     def set_camera_auto_exposure(self, on: bool):
-        if self.camera_tab.use_synthetic_source():
-            if self.camera is not None:
-                self.camera.set_property("auto_exposure", 1.0 if on else 0.0)
-        elif v4l2.available():
-            v4l2.set_auto_exposure(self.selected_device(), on)
+        st = self.camera_tab.source_type()
+        if st == "v4l2":
+            if v4l2.available():
+                v4l2.set_auto_exposure(self.selected_device(), on)
+        elif self.camera is not None:
+            self.camera.set_property("auto_exposure", 1.0 if on else 0.0)
 
     def ensure_camera(self) -> bool:
         """Connect using the Camera tab's current source selection if needed."""
