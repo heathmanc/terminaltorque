@@ -222,6 +222,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_live()
             self.statusBar().showMessage("Could not start a camera")
             return
+        self.live_tab.view.clear_measure()   # stale measure marks don't belong on live
         self.live_timer.start()
 
     def stop_live(self):
@@ -277,6 +278,41 @@ class MainWindow(QtWidgets.QMainWindow):
     def capture_and_process(self):
         if self.capture() is not None:
             self.process()
+
+    # ----------------------------------------------------- click-to-measure
+    def begin_measure(self):
+        """Freeze a frame and arm the two-click scale measurement."""
+        # Measuring needs a still image; capture freezes the live stream.
+        if self.live_timer.isActive() or self.captured_frame is None:
+            if self.capture() is None:
+                return
+        self.live_tab.view.start_measure()
+        self.statusBar().showMessage(
+            "Measure scale: click the two ends of a feature of known size"
+        )
+
+    def on_measurement(self, distance_px: float):
+        """Prompt for the real length of the clicked segment and set the scale."""
+        if distance_px <= 0:
+            return
+        mm, ok = QtWidgets.QInputDialog.getDouble(
+            self, "Known length",
+            f"Measured {distance_px:.1f} px.\nReal length of that segment (mm):",
+            12.0, 0.001, 100000.0, 3,
+        )
+        if not ok:
+            return
+        self.apply_measured_scale(distance_px, mm)
+
+    def apply_measured_scale(self, distance_px: float, mm: float):
+        if distance_px <= 0 or mm <= 0:
+            return
+        scale = mm / distance_px
+        # Push into the Detection tab, which owns calibration state and UI.
+        self.detection_tab.set_scale(scale)
+        self.statusBar().showMessage(
+            f"Calibrated: {scale:.5f} mm/px (from {distance_px:.1f} px = {mm:g} mm)"
+        )
 
     # ----------------------------------------------------------- detection
     def set_detection(self, min_radius_px, max_radius_px, expected_count,

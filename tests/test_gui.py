@@ -215,6 +215,51 @@ def test_capture_freezes_live_stream(window):
     assert not window.live_timer.isActive()
 
 
+def test_image_view_widget_to_image_mapping(qapp):
+    import numpy as np
+    from terminaltorque.gui.widgets import ImageView
+
+    view = ImageView()
+    view.resize(640, 480)
+    view.set_frame(np.zeros((240, 320, 3), dtype=np.uint8))  # 320x240 image
+    # scale = min(640/320, 480/240) = 2; no letterboxing -> center maps to center.
+    assert view._widget_to_image(320, 240) == (160.0, 120.0)
+    assert view._widget_to_image(0, 0) == (0.0, 0.0)
+    # Outside the image returns None.
+    assert view._widget_to_image(10000, 10000) is None
+
+
+def test_measure_two_clicks_emits_distance(qapp):
+    import numpy as np
+    from PySide6 import QtCore, QtGui
+    from terminaltorque.gui.widgets import ImageView
+
+    view = ImageView()
+    view.resize(640, 480)
+    view.set_frame(np.zeros((240, 320, 3), dtype=np.uint8))
+    got = []
+    view.measurementReady.connect(got.append)
+    view.start_measure()
+
+    def click(wx, wy):
+        ev = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseButtonPress, QtCore.QPointF(wx, wy),
+            QtCore.Qt.LeftButton, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier)
+        view.mousePressEvent(ev)
+
+    # Two points 200 widget-px apart horizontally -> 100 image px (scale 2).
+    click(100, 240)
+    click(300, 240)
+    assert got and abs(got[0] - 100.0) < 1e-6
+
+
+def test_apply_measured_scale_sets_calibration(window):
+    window.apply_measured_scale(distance_px=100.0, mm=12.0)
+    assert window.detection_tab.mm_per_px.value() == pytest.approx(0.12)
+    cal = window._current_calibration((480, 640))
+    assert cal is not None and cal.mm_per_px == pytest.approx(0.12)
+
+
 def test_plc_group_disable_drops_tag(window):
     window.set_plc_config(PlcConfig.from_ip("1.2.3.4", max_wells=2))
     window.set_plc_group_enabled("dia", False)

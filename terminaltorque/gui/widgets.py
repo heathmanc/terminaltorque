@@ -23,7 +23,15 @@ def bgr_to_qpixmap(frame: np.ndarray) -> QtGui.QPixmap:
 
 
 class ImageView(QtWidgets.QLabel):
-    """A QLabel that displays a frame, scaled to fit while keeping aspect."""
+    """A QLabel that displays a frame scaled to fit, with a click-to-measure mode.
+
+    In measure mode the next two clicks mark a segment on the *image* (mapped
+    from widget coordinates through the aspect-fit scaling); ``measurementReady``
+    fires with the segment length in image pixels once both points are set.
+    """
+
+    # Emitted with the distance in image pixels once two points are clicked.
+    measurementReady = QtCore.Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -32,6 +40,8 @@ class ImageView(QtWidgets.QLabel):
         self.setObjectName("ImageView")
         self.setText("No image")
         self._pixmap: Optional[QtGui.QPixmap] = None
+        self._measure_mode = False
+        self._points: list = []  # image-coordinate points
 
     def set_frame(self, frame: Optional[np.ndarray]) -> None:
         if frame is None:
@@ -55,6 +65,83 @@ class ImageView(QtWidgets.QLabel):
                 QtCore.Qt.SmoothTransformation,
             )
         )
+        self.update()
+
+    # -- measure mode --------------------------------------------------------
+    def start_measure(self):
+        self._measure_mode = True
+        self._points = []
+        self.setCursor(QtCore.Qt.CrossCursor)
+        self.update()
+
+    def clear_measure(self):
+        self._measure_mode = False
+        self._points = []
+        self.unsetCursor()
+        self.update()
+
+    def _displayed_rect(self):
+        """(offset_x, offset_y, scale) of the image within the widget, or None."""
+        if self._pixmap is None:
+            return None
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        if pw == 0 or ph == 0:
+            return None
+        scale = min(self.width() / pw, self.height() / ph)
+        ox = (self.width() - pw * scale) / 2.0
+        oy = (self.height() - ph * scale) / 2.0
+        return ox, oy, scale
+
+    def _widget_to_image(self, x: float, y: float):
+        r = self._displayed_rect()
+        if r is None:
+            return None
+        ox, oy, scale = r
+        ix, iy = (x - ox) / scale, (y - oy) / scale
+        if 0 <= ix < self._pixmap.width() and 0 <= iy < self._pixmap.height():
+            return ix, iy
+        return None
+
+    def _image_to_widget(self, ix: float, iy: float):
+        ox, oy, scale = self._displayed_rect()
+        return QtCore.QPointF(ox + ix * scale, oy + iy * scale)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if self._measure_mode and event.button() == QtCore.Qt.LeftButton:
+            pos = event.position()
+            p = self._widget_to_image(pos.x(), pos.y())
+            if p is not None:
+                self._points.append(p)
+                if len(self._points) == 2:
+                    (x0, y0), (x1, y1) = self._points
+                    dist = float(np.hypot(x1 - x0, y1 - y0))
+                    self._measure_mode = False
+                    self.unsetCursor()
+                    self.update()
+                    self.measurementReady.emit(dist)
+                else:
+                    self.update()
+            return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)  # draws the scaled pixmap (and stylesheet)
+        if self._pixmap is None or not self._points:
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        pen = QtGui.QPen(QtGui.QColor("#ffd166"), 2)
+        painter.setPen(pen)
+        widget_pts = [self._image_to_widget(ix, iy) for ix, iy in self._points]
+        for wp in widget_pts:
+            painter.drawEllipse(wp, 4, 4)
+        if len(widget_pts) == 2:
+            painter.drawLine(widget_pts[0], widget_pts[1])
+            (x0, y0), (x1, y1) = self._points
+            dist = np.hypot(x1 - x0, y1 - y0)
+            mid = (widget_pts[0] + widget_pts[1]) / 2.0
+            painter.drawText(mid + QtCore.QPointF(6, -6), f"{dist:.1f} px")
+        painter.end()
 
 
 class StatusLED(QtWidgets.QWidget):

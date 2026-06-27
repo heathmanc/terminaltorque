@@ -122,6 +122,10 @@ class DetectionTab(QtWidgets.QWidget):
         if self.cal_px.value() > 0:
             self.mm_per_px.setValue(self.cal_mm.value() / self.cal_px.value())
 
+    def set_scale(self, mm_per_px: float):
+        """Set the calibration scale (e.g. from the Live View measure tool)."""
+        self.mm_per_px.setValue(mm_per_px)  # triggers _on_change -> applies calibration
+
     def _diameter_px(self, value: float) -> float:
         """Convert a diameter in the selected units to pixels."""
         if self.is_mm():

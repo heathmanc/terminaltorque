@@ -42,7 +42,8 @@ Four tabs:
 
 - **Live View** — **Start Live** connects the camera (per the Camera tab's
   source) and streams it; **Capture** a frame, **Capture & Process** to detect
-  wells (centers + diameters overlaid, results in a table), and **Push to PLC**.
+  wells (centers + diameters overlaid, results in a table), **Measure Scale** to
+  click-to-calibrate mm-per-pixel on the frozen frame, and **Push to PLC**.
 - **Camera** — pick the source (a real device index or the built-in synthetic
   demo lid) and choose a capture backend. **Detect modes & controls** reads the
   camera's *real* supported resolutions/frame rates and its *real* image
@@ -214,8 +215,15 @@ For a flat lid imaged roughly perpendicular to the camera at a fixed working
 distance, a single **millimeters-per-pixel** scale plus an origin offset maps
 image pixels to the robot plane.
 
-Measure the pixel size of a feature whose true size you know (e.g. a gauge or a
-terminal of known machined diameter) and save a reusable calibration:
+**Easiest (HMI): click-to-measure.** On the **Live View**, press **Measure
+Scale**, then click the two ends of a feature whose real size you know (a well
+rim, a gauge, a ruler mark). Enter that real length in millimeters when prompted
+and the mm-per-pixel scale is set immediately — no detect-first round-trip. The
+measurement is taken on the frozen frame, so capture/aim first.
+
+**Or from a known length on the command line:** measure the pixel size of a
+feature whose true size you know (e.g. a gauge or a terminal of known machined
+diameter) and save a reusable calibration:
 
 ```bash
 python -m terminaltorque --image lid.png \

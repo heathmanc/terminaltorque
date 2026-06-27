@@ -19,6 +19,7 @@ class LiveViewTab(QtWidgets.QWidget):
         # --- left: image + capture controls ---
         left = QtWidgets.QVBoxLayout()
         self.view = ImageView()
+        self.view.measurementReady.connect(self.main.on_measurement)
         left.addWidget(self.view, 1)
 
         controls = QtWidgets.QHBoxLayout()
@@ -36,11 +37,17 @@ class LiveViewTab(QtWidgets.QWidget):
         self.btn_reprocess = QtWidgets.QPushButton("Re-process")
         self.btn_reprocess.clicked.connect(self.main.process)
 
+        self.btn_measure = QtWidgets.QPushButton("Measure Scale")
+        self.btn_measure.setToolTip(
+            "Click two points on a feature of known size to set mm-per-pixel."
+        )
+        self.btn_measure.clicked.connect(self.main.begin_measure)
+
         self.btn_push = QtWidgets.QPushButton("Push to PLC")
         self.btn_push.clicked.connect(self.main.push_to_plc)
 
         for b in (self.btn_live, self.btn_capture, self.btn_process,
-                  self.btn_reprocess, self.btn_push):
+                  self.btn_reprocess, self.btn_measure, self.btn_push):
             controls.addWidget(b)
         controls.addStretch(1)
         left.addLayout(controls)
